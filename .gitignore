@@ -1,0 +1,9 @@
+venv/
+lewm-env/
+__pycache__/
+*.pyc
+.env
+data/
+models/
+logs/
+notebooks/
