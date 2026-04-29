@@ -1,10 +1,80 @@
-venv/
-lewm-env/
+# /.venv/
+# /lewm-env/
+# /__pycache__/
+# /*.pyc
+# /.env
+# /data/
+# /outputs/
+# /wandb/
+# /logs/
+# /notebooks/
+
+# # !models/
+# # !models/**
+
+# /*.json
+# /*.txt
+# /*.yaml
+# /*.hydra
+# !lewm.yaml
+
+# # --- 1. 环境与依赖 ---
+# .venv/
+# venv/
+# ENV/
+# # 排除所有环境相关的 json 和 txt
+# environment*.json
+# requirements*.txt
+
+# # --- 2. 缓存与临时文件 ---
+# __pycache__/
+# *.py[cod]
+# *$py.class
+# .DS_Store
+# .ipynb_checkpoints/
+
+# # --- 3. 训练日志与输出 ---
+# outputs/
+# wandb/
+# *.log
+
+# # --- 4. 显式排除特定的文件类型 ---
+# # 排除所有的 json 和 txt 文件（如你所要求）
+# *.json
+# *.txt
+
+# # --- 5. 如果 assets 文件夹里是大型权重或数据集，建议也排除 ---
+# # assets/
+
+
+
+**/.venv/
+/lewm-env/
 __pycache__/
 *.pyc
-.env
-data/
+/.env
+/data/
+outputs/
+wandb/
 logs/
+files/
 notebooks/
+**/outputs/
+**/wandb/
+**/logs/
+**/__pycache__/
+*.json
+*.txt
+*.hydra
+*.yaml
+!models/le-wm/config/train/lewm.yaml
 !models/
 !models/**
+models/**/outputs/
+models/**/wandb/
+models/**/logs/
+models/**/__pycache__/
+models/**/*.json
+models/**/*.txt
+models/**/*.hydra
+models/**/*.yaml

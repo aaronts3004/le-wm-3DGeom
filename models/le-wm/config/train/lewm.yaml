@@ -35,8 +35,8 @@ optimizer:
 wandb:
   enabled: True
   config:
-    entity: lewm
-    project: lewm
+    entity: lewm_3DGeo
+    project: lewm_3DGeo
     name: ${output_model_name}
     id: ${subdir}
     resume: allow
