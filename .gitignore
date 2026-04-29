@@ -1,4 +1,4 @@
-/.venv/
+**/.venv/
 /lewm-env/
 
 __pycache__/
@@ -29,3 +29,8 @@ notebooks/
 models/**/outputs/
 models/**/wandb/
 models/**/logs/
+models/**/__pycache__/
+models/**/*.json
+models/**/*.txt
+models/**/*.hydra
+models/**/*.yaml
