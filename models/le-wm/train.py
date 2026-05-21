@@ -17,8 +17,6 @@ from utils import get_column_normalizer, get_img_preprocessor, ModelObjectCallBa
 from torch.utils.data import Subset
 import random
 
-from torch.profiler import profile, record_function, ProfilerActivity
-from lightning.pytorch.profilers import PyTorchProfiler
 from lightning.pytorch.callbacks import EarlyStopping
 
 
@@ -40,18 +38,10 @@ def lejepa_forward(self, batch, stage, cfg):
     lambd = cfg.loss.sigreg.weight
 
     # Replace NaN values with 0 (occurs at sequence boundaries)
-    with record_function("nan_to_num"):
-        batch["action"] = torch.nan_to_num(
-            batch["action"], 0.0
-        )
-
-    # batch["action"] = torch.nan_to_num(batch["action"], 0.0)
+    batch["action"] = torch.nan_to_num(batch["action"], 0.0)
     # print(batch["action"][0])  # print the first action tensor after NaN replacement to verify
     # print("Encoding batch")
-    with record_function("model_encode"):
-            output = self.model.encode(batch)
-
-    # output = self.model.encode(batch)           # [B,T,D]                           
+    output = self.model.encode(batch)           # [B,T,D]                           
 
     emb = output["emb"]  # (B, T, D)    -> T = number of sampled frames in one batch sequence, eg [f0, f4, f8, f12] with T=4 
     act_emb = output["act_emb"]
@@ -59,10 +49,9 @@ def lejepa_forward(self, batch, stage, cfg):
     # print("Encoded embeddings shape: ", emb.shape)
     # print("Encoded action embeddings shape: ", act_emb.shape)
 
-    with record_function("slice_context"):
-        ctx_emb = emb[:, :ctx_len]
-        ctx_act = act_emb[:, :ctx_len]
-        tgt_emb = emb[:, n_preds:].contiguous()
+    ctx_emb = emb[:, :ctx_len]
+    ctx_act = act_emb[:, :ctx_len]
+    tgt_emb = emb[:, n_preds:].contiguous()
 
     # ctx_emb = emb[:, :ctx_len]
     # ctx_act = act_emb[:, : ctx_len]
@@ -70,42 +59,20 @@ def lejepa_forward(self, batch, stage, cfg):
     # print("Context embeddings shape: ", ctx_emb.shape)
     # print("Context action embeddings shape: ", ctx_act.shape)
 
-    # tgt_emb = emb[:, n_preds:] # label
+    tgt_emb = emb[:, n_preds:] # label
 
     # print("Target embeddings shape: ", tgt_emb.shape)
     # print("ctx_len: ", ctx_len, "n_preds: ", n_preds)
 
     # print("Running prediction")
-    with record_function("model_predict"):
-        pred_emb = self.model.predict(
-            ctx_emb,
-            ctx_act
-        )
-    # pred_emb = self.model.predict(ctx_emb, ctx_act) # pred
+    pred_emb = self.model.predict(ctx_emb, ctx_act) # pred
     # print("Prediction complete. pred_emb shape: ", pred_emb.shape)
 
     # LeWM loss
     # print("Target embedding shape: ", tgt_emb.shape)
-    with record_function("pred_loss"):
-        output["pred_loss"] = (
-            (pred_emb - tgt_emb)
-            .pow(2)
-            .mean()
-        )
-    # output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
-
-    with record_function("sigreg_loss"):
-        output["sigreg_loss"] = self.sigreg(
-            emb.transpose(0, 1)
-    )
-    # output["sigreg_loss"]= self.sigreg(emb.transpose(0, 1))
-    with record_function("total_loss"):
-        output["loss"] = (
-            output["pred_loss"]
-            + lambd * output["sigreg_loss"]
-        )
-        
-    # output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]  
+    output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
+    output["sigreg_loss"]= self.sigreg(emb.transpose(0, 1))
+    output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]  
 
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
     self.log_dict(losses_dict, on_step=False, on_epoch=True, sync_dist=True)
