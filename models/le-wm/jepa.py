@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
 
+from torch.profiler import record_function
+
 def detach_clone(v):
     return v.detach().clone() if torch.is_tensor(v) else v
 
@@ -30,17 +32,48 @@ class JEPA(nn.Module):
         """Encode observations and actions into embeddings.
         info: dict with pixels and action keys
         """
+        # print("\n\n*** ENCODER *** \n\n")
 
-        pixels = info['pixels'].float()
-        b = pixels.size(0)
-        pixels = rearrange(pixels, "b t ... -> (b t) ...") # flatten for encoding
-        output = self.encoder(pixels, interpolate_pos_encoding=True)
-        pixels_emb = output.last_hidden_state[:, 0]  # cls token
-        emb = self.projector(pixels_emb)
-        info["emb"] = rearrange(emb, "(b t) d -> b t d", b=b)
+        with record_function("prepare_pixels"):
+            pixels = info['pixels'].float()
+            b = pixels.size(0)
+            pixels = rearrange(pixels, "b t ... -> (b t) ...") # flatten for encoding
+
+        # print("Encoding pixels with shape: ", pixels.shape)
+        with record_function("vision_encoder"):
+            output = self.encoder(
+                pixels,
+                interpolate_pos_encoding=True
+            )
+
+        # print("Encoding complete. Output keys: ", output.keys())
+        # print("Encoding output 'last_hidden_state' shape: ", output.last_hidden_state.shape)
+
+        with record_function("cls_token_extract"):
+            pixels_emb = output.last_hidden_state[:, 0]
+
+
+        # print("Projecting pixel embeddings with shape: ", pixels_emb.shape)
+
+        with record_function("projector"):
+            emb = self.projector(pixels_emb)
+
+
+        # print("Projection complete. Embedding shape: ", emb.shape)
+        with record_function("reshape_embeddings"):
+            info["emb"] = rearrange(
+                emb,
+                "(b t) d -> b t d",
+                b=b
+            )
+
+        # print("Pixel embedding added to info dict with shape: ", info["emb"].shape)
 
         if "action" in info:
-            info["act_emb"] = self.action_encoder(info["action"])
+            # print("Encoding actions with shape: ", info["action"].shape)
+            with record_function("action_encoder"):
+                info["act_emb"] = self.action_encoder(info["action"])
+            # print("Action encoding complete. Action embedding shape: ", info["act_emb"].shape)
 
         return info
 
@@ -49,9 +82,16 @@ class JEPA(nn.Module):
         emb: (B, T, D)
         act_emb: (B, T, A_emb)
         """
+        # print("Running prediction")
+        # print("Predicting with emb shape: ", emb.shape, " and act_emb shape: ", act_emb.shape)
+
+
         preds = self.predictor(emb, act_emb)
+        # print("Predictor output shape: ", preds.shape)
         preds = self.pred_proj(rearrange(preds, "b t d -> (b t) d"))
+        # print("Prediction projection complete. pred_emb shape: ", preds.shape)
         preds = rearrange(preds, "(b t) d -> b t d", b=emb.size(0))
+        # print("Prediction complete. pred_emb shape: ", preds.shape)
         return preds
 
     ####################

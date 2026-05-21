@@ -18,7 +18,9 @@ from torch.utils.data import Subset
 import random
 
 from torch.profiler import profile, record_function, ProfilerActivity
+
 from lightning.pytorch.profilers import PyTorchProfiler
+
 from lightning.pytorch.callbacks import EarlyStopping
 
 
