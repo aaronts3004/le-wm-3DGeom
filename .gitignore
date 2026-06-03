@@ -34,3 +34,5 @@ models/**/*.json
 models/**/*.txt
 models/**/*.hydra
 models/**/*.yaml
+
+.lewm_public/
