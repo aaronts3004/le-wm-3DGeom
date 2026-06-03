@@ -8,3 +8,5 @@ logs/
 notebooks/
 !models/
 !models/**
+.venv/
+.lewm_public/
