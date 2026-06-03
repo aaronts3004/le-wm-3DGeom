@@ -4,6 +4,11 @@ defaults:
 
 output_model_name: lewm
 subdir: ${hydra:job.id}
+run_validation: False
+train_num_episodes: 500
+val_num_episodes: 500
+early_stop_patience: 10
+early_stop_min_improv: 0.0005
 
 num_workers: 6
 train_split: 0.9
@@ -21,7 +26,7 @@ trainer:
   gradient_clip_val: 1.0
 
 loader:
-  batch_size: 128
+  batch_size: 32
   num_workers: ${num_workers}
   persistent_workers: True
   prefetch_factor: 3
@@ -32,16 +37,16 @@ optimizer:
   lr: 5e-5
   weight_decay: 1e-3
 
+
 wandb:
   enabled: True
   config:
-    entity: lewm
-    project: lewm
-    name: ${output_model_name}
+    entity: lewm_3DGeo
+    project: lewm_train_scales
+    name: ${output_model_name}_${train_num_episodes}_validation_${run_validation}
     id: ${subdir}
-    resume: allow
+    resume: never
     log_model: False
-
 wm:
   type: lewm
   history_size: 3

@@ -10,3 +10,14 @@ notebooks/
 !models/**
 .venv/
 .lewm_public/
+
+# Training outputs
+outputs/
+wandb/
+logs/
+tb_profiler_logs/
+*.json
+*requirements*
+models/le-wm/__pycache__/utils.cpython-310.pyc
+models/le-wm/__pycache__/module.cpython-310.pyc
+models/le-wm/__pycache__/jepa.cpython-310.pyc
