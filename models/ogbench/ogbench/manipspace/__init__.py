@@ -2,8 +2,8 @@ from gymnasium.envs.registration import register
 
 visual_dict = dict(
     ob_type='pixels',
-    width=64,
-    height=64,
+    width=224,
+    height=224,
     visualize_info=False,
 )
 cube_singletask_dict = dict(
@@ -33,6 +33,7 @@ register(
     max_episode_steps=200,
     kwargs=dict(
         env_type='single',
+        pixel_transparent_arm=False,
         **visual_dict,
     ),
 )

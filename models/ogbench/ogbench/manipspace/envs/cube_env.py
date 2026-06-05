@@ -533,15 +533,74 @@ class CubeEnv(ManipSpaceEnv):
         for i in range(self._num_cubes):
             self._cube_target_geoms_list.append(arena_mjcf.find('body', f'object_target_{i}').find_all('geom'))
 
+        # Add cameras.          ### "Original ogbench definition of cameras" 
+        # cameras = {
+        #     'front': {
+        #         'pos': (1.287, 0.000, 0.509),
+        #         'xyaxes': (0.000, 1.000, 0.000, -0.342, 0.000, 0.940),
+        #     },
+        #     'front_pixels': {
+        #         'pos': (1.053, -0.014, 0.639),
+        #         'xyaxes': (0.000, 1.000, 0.000, -0.628, 0.001, 0.778),
+        #     },
+        # }
         # Add cameras.
+
+        distance_back = 0.68
+        look_dir = ([0.778, 0.0, 0.628])
+        base_pos = ([1.053, -0.014, 0.639])
         cameras = {
-            'front': {
-                'pos': (1.287, 0.000, 0.509),
-                'xyaxes': (0.000, 1.000, 0.000, -0.342, 0.000, 0.940),
+
+            "front_zoomed": {
+                "pos": tuple(base_pos + distance_back * np.array(look_dir)),
+                "xyaxes": (
+                    0.000, 1.000, 0.000,
+                -0.628, 0.001, 0.778
+                ),
             },
-            'front_pixels': {
-                'pos': (1.053, -0.014, 0.639),
-                'xyaxes': (0.000, 1.000, 0.000, -0.628, 0.001, 0.778),
+
+            "front_pixels": {                                   ### lewm setting of front camera 
+                "pos": (1.053, -0.014, 0.639),
+                "xyaxes": (
+                    0.000, 1.000, 0.000,
+                -0.628, 0.001, 0.778
+                ),
+            },
+
+            # +45°
+            "left": {
+                "pos": (1.03, 0.73, 0.509),
+                "xyaxes": (
+                -0.707, 0.707, 0.000,
+                -0.242,-0.242, 0.940
+                ),
+            },
+
+            # -45°
+            "right": {
+                "pos": (1.03,-0.73, 0.509),
+                "xyaxes": (
+                    0.707, 0.707, 0.000,
+                -0.242, 0.242, 0.940
+                ),
+            },
+
+            # 90° side
+            "side": {
+                "pos": (0.425, 1.03, 0.509),
+                "xyaxes": (
+                -1.000, 0.000, 0.000,
+                    0.000,-0.342, 0.940
+                ),
+            },
+
+            # overhead but still slightly angled
+            "top": {
+                "pos": (0.425, 0.000, 1.20),
+                "xyaxes": (
+                    1.000, 0.000, 0.000,
+                    0.000, 1.000, 0.000
+                ),
             },
         }
         for camera_name, camera_kwargs in cameras.items():
