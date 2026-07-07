@@ -1,37 +1,31 @@
 import os
 from functools import partial
 from pathlib import Path
+import numpy as np
 
 import hydra
 import lightning as pl
 import stable_pretraining as spt
 import stable_worldmodel as swm
+import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image
+from datetime import datetime
 import torch
 from lightning.pytorch.loggers import WandbLogger, CSVLogger
 from omegaconf import OmegaConf, open_dict
 
-from jepa import JEPA
-from module import ARPredictor, Embedder, MLP, SIGReg
-from utils import get_column_normalizer, get_img_preprocessor, ModelObjectCallBack
+from module import SIGReg
+from utils import get_column_normalizer, get_img_preprocessor, instantiate_world_model, sanity_check_on_loaded_batch, depth_img_preprocessor, collect_all_callbacks
+from utils import ModelObjectCallBack
 
 from torch.utils.data import Subset
 import random
 
-from lightning.pytorch.callbacks import EarlyStopping
-
+import stable_worldmodel.data
 
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
-    # print("*****************************************")
-    # print("\n\n*** FORWARD PASS *** \n\n")
-    # print(f"Forward pass at stage: {stage} and batch_idx: {batch['batch_idx']}")
-    # print(f"Batch keys: {batch.keys()}")
-    # print(f"Batch 'pixels' shape: {batch['pixels'].shape}")
-    # print(f"Batch 'action' shape: {batch['action'].shape}")
-    # print(f"Batch 'observation' shape: {batch['observation'].shape}")
-    # print(f"Batch 'proprio' shape: {batch['proprio'].shape}")
-
-
 
     ctx_len = cfg.wm.history_size
     n_preds = cfg.wm.num_preds
@@ -86,15 +80,42 @@ def run(cfg):
     ##       dataset       ##
     #########################
 
-    dataset = swm.data.HDF5Dataset(**cfg.data.dataset, transform=None, )
-    transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    dataset_name_without_full_path = cfg.data.dataset.name.split("/")[-1]
+    SAVE_CKPT_PATH = f"/home/student/users/Public_workspace/le-wm-3DGeom/models/le-wm/outputs/checkpoints/{dataset_name_without_full_path}/"
+    os.makedirs(SAVE_CKPT_PATH, exist_ok=True)
+    RUN_OUTPUT_DIR=f"/home/student/users/Public_workspace/le-wm-3DGeom/models/le-wm/outputs/results_09_07/{dataset_name_without_full_path}/{run_timestamp}"
+    os.makedirs(RUN_OUTPUT_DIR,exist_ok=True )
+
+    DEPTH = "depth" in cfg.data.dataset.name.lower()
+
+    dataset = swm.data.HDF5Dataset(**cfg.data.dataset, transform=None)
+
+    if DEPTH: 
+        transforms = [depth_img_preprocessor(cfg.img_size)]
+    else:
+        transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size, depth=DEPTH)]
+
+    
+    logger = None
+    if cfg.wandb.enabled:
+        logger = WandbLogger(**cfg.wandb.config)
+        logger.log_hyperparams(OmegaConf.to_container(cfg))
+
+
+    print(dataset.clip_indices[:10])
+    print(dataset.clip_indices[-10:])
 
     print("\n\nDataset initialized with the following parameters:")
     print(OmegaConf.to_yaml(cfg))
-    print(f"self.span={dataset.span}")
     
     with open_dict(cfg):
         for col in cfg.data.dataset.keys_to_load:
+
+            if col in ["qpos", "qvel"]:
+                continue
+
             if col.startswith("pixels"):
                 continue
 
@@ -106,143 +127,114 @@ def run(cfg):
     transform = spt.data.transforms.Compose(*transforms)
     dataset.transform = transform
 
-    # dataset.clip_indices = dataset.clip_indices[:64]  # for debugging, use only the first 1000 clips
-    # episode_one = dataset.clip_indices[0:182]
-    # episode_two = dataset.clip_indices[182:364]
-    # dataset.clip_indices = [episode_one, episode_two]  # Use only the first two episodes for training and validation
+    print("dataset=", cfg.data.dataset)
+    print("dataset.column_names=", dataset.column_names)
+    print("dataset.frameskip=", dataset.frameskip)
+    print("dataset.span=", dataset.span)
+    print("dataset.num_steps=", dataset.num_steps)
+    print("total clip_indices=", len(dataset.clip_indices))
+    print("dataset samples= ", len(dataset))
 
-    # ***************************     ORIGINAL DATA SPIT    ***************************
+    ##############################
+    ##       DATALOADERS      ##
+    ##############################
     rnd_gen = torch.Generator().manual_seed(cfg.seed)
-    # train_set, val_set = spt.data.random_split(
-    #     dataset, lengths=[cfg.train_split, 1 - cfg.train_split], generator=rnd_gen
-    # )
+    print("dataset samples=", len(dataset))
+    train_loader = torch.utils.data.DataLoader(dataset, **cfg.loader, shuffle=True, drop_last=True, generator=rnd_gen)
+    val_loader = train_loader
+    print("number of batches in data loader=", len(train_loader))
 
-    # train_eps = set()
-    # val_eps = set()
+    print("\n\nInspect a single sample from the dataset")
+    ## SANITY CHECKS
 
-    # for idx in train_set.indices: 
-    #     ep_id = dataset.clip_indices[idx][0]
-    #     train_eps.add(ep_id)
+    sample = dataset[0]
+    for k, v in sample.items():
+        if hasattr(v, "shape"):
+            print(k, v.shape)
+        else:
+            print(k, type(v))
+    img = sample["pixels"]
+    print("img.shape=", img.shape)
+    print("img.dtype=", img.dtype)
+    print(img.min(), img.max())
+    print(img.mean(), img.std())
 
-    # for idx in val_set.indices:
-    #     ep_id = dataset.clip_indices[idx][0]
-    #     val_eps.add(ep_id)
+    if DEPTH: 
+        frame0 = sample["pixels"][0, 0].cpu().numpy()   # first frame, first channel
 
-    # print("Overlap between train and val sets:", train_eps.intersection(val_eps))
-    # ***************************************************************************************
+        # Undo [-1,1] normalization
+        frame0 = (frame0 + 1.0) / 2.0
+        frame0 = frame0 * (3.0 - 0.5) + 0.5
+
+        plt.figure(figsize=(5,5))
+        plt.imshow(frame0, cmap="viridis", vmin=0.5, vmax=3.0)
+        plt.colorbar(label="Depth (m)")
+        plt.axis("off")
+
+        outfile = f"{RUN_OUTPUT_DIR}/depth_after_pipeline.png"
+        plt.savefig(outfile, dpi=200, bbox_inches="tight")
+        plt.close()
+
+
+    print("\n\nInspect a full batch from the dataloader")
+    batch = next(iter(train_loader))
+    sanity_checks_output_dir = f"{RUN_OUTPUT_DIR}/sanity_checks"
+    os.makedirs(sanity_checks_output_dir, exist_ok=True)
+    sanity_check_on_loaded_batch(batch, depth=DEPTH, output_dir=sanity_checks_output_dir)
+
 
     all_episode_ids = torch.load("episode_order.pt")
-    print("Total unique episodes in dataset: ", len(all_episode_ids))
-    print("First 20 episode IDs: ", all_episode_ids[:20])
+    print(all_episode_ids[:10])
 
-    val_episode_count = cfg.val_num_episodes
     train_episode_count = cfg.train_num_episodes
 
-    # fixed validation
-    val_episodes = set(
-        all_episode_ids[:val_episode_count]
-    )
+    # Fixed validation split:
+    selected_train_episodes = set(all_episode_ids[0:train_episode_count])
+    selected_val_episodes   = set(all_episode_ids[train_episode_count:train_episode_count+cfg.val_num_episodes])
 
-    train_pool = all_episode_ids[val_episode_count:]
-    selected_train_episodes = set(
-        train_pool[:train_episode_count]
-    )
-
-    # episodes → indices
     train_indices = [
-        idx for idx, (ep_id, _) in enumerate(dataset.clip_indices)
-        if ep_id in selected_train_episodes
+        idx
+        for idx, (local_ep, _) in enumerate(dataset.clip_indices)
+        if dataset.episode_ids[local_ep] in selected_train_episodes
     ]
 
     val_indices = [
-        idx for idx, (ep_id, _) in enumerate(dataset.clip_indices)
-        if ep_id in val_episodes
+        idx
+        for idx, (local_ep, _) in enumerate(dataset.clip_indices)
+        if dataset.episode_ids[local_ep] in selected_val_episodes
     ]
 
     train_set = Subset(dataset, train_indices)
     val_set = Subset(dataset, val_indices)
-   
-    print(f"Train episodes: {len(selected_train_episodes)}")
-    print(f"Val episodes: {len(val_episodes)}")
-    print(f"Train samples: {len(train_set)}")
-    print(f"Val samples: {len(val_set)}")
 
-    train = torch.utils.data.DataLoader(train_set, **cfg.loader,shuffle=True, drop_last=True, generator=rnd_gen)
-    val = torch.utils.data.DataLoader(val_set, **cfg.loader, shuffle=False, drop_last=False)
+    print(
+        f"Dataset split | "
+        f"train episodes={len(selected_train_episodes)} "
+        f"train samples={len(train_set)} | "
+        f"val episodes={len(selected_val_episodes)} "
+        f"val samples={len(val_set)}"
+    )
+    print(train_indices[:20])
+    print(train_indices[-20:])
+    print(dataset.clip_indices[:20])
 
-    i = 0
-    for batch in train:
-        print(f"Batch keys: {batch.keys()}")
-        print(f"Batch 'pixels' shape: {batch['pixels'].shape}")
-        print(f"Batch 'action' shape: {batch['action'].shape}")
-        i += 1
-        if i == 2:
-            break
+    train_loader = torch.utils.data.DataLoader(train_set,**cfg.loader,shuffle=True,drop_last=True,generator=rnd_gen,)
 
-        
+    # val_kwargs = dict(cfg.loader)
+    # val_kwargs["persistent_workers"] = False
+    # val_kwargs["prefetch_factor"] = None
+    # val_kwargs["num_workers"] = 16
+    val_loader = torch.utils.data.DataLoader(val_set,**cfg.loader,shuffle=False,drop_last=False,)
+
+    print()
+    print("len(train_loader)=", len(train_loader))
+    print("len(val_loader)=", len(val_loader))
+
     ##############################
-    ##       model / optim      ##
+    ##       MODEL / OPTIM      ##
     ##############################
 
-    encoder = spt.backbone.utils.vit_hf(
-        cfg.encoder_scale,
-        patch_size=cfg.patch_size,
-        image_size=cfg.img_size,
-        pretrained=False,
-        use_mask_token=False,
-    )
-
-    total = 0
-    trainable = 0
-
-    for name, p in encoder.named_parameters():
-        total += p.numel()
-        if p.requires_grad:
-            trainable += p.numel()
-            print(f"TRAINABLE: {name}")
-
-    print(f"Total params: {total:,}")
-    print(f"Trainable params: {trainable:,}")
-
-
-    hidden_dim = encoder.config.hidden_size
-    embed_dim = cfg.wm.get("embed_dim", hidden_dim)
-    effective_act_dim = cfg.data.dataset.frameskip * cfg.wm.action_dim
-    
-    predictor = ARPredictor(
-        num_frames=cfg.wm.history_size,
-        input_dim=embed_dim,
-        hidden_dim=hidden_dim,
-        output_dim=hidden_dim,
-        **cfg.predictor,
-    )
-
-    action_encoder = Embedder(input_dim=effective_act_dim, emb_dim=embed_dim)
-    
-    projector = MLP(
-        input_dim=hidden_dim,
-        output_dim=embed_dim,
-        hidden_dim=2048,
-        norm_fn=torch.nn.BatchNorm1d,
-    )
-
-
-
-
-    predictor_proj = MLP(
-        input_dim=hidden_dim,
-        output_dim=embed_dim,
-        hidden_dim=2048,
-        norm_fn=torch.nn.BatchNorm1d,
-    )
-
-    world_model = JEPA(
-        encoder=encoder,
-        predictor=predictor,
-        action_encoder=action_encoder,
-        projector=projector,
-        pred_proj=predictor_proj,
-    )
+    world_model = instantiate_world_model(cfg)
 
     optimizers = {
         'model_opt': {
@@ -253,7 +245,7 @@ def run(cfg):
         },
     }
 
-    data_module = spt.data.DataModule(train=train, val=val)
+    data_module = spt.data.DataModule(train=train_loader, val=val_loader)
     world_model = spt.Module(
         model = world_model,
         sigreg = SIGReg(**cfg.loss.sigreg.kwargs),
@@ -266,17 +258,13 @@ def run(cfg):
     print(world_model.__class__.__module__)
     print(world_model.__class__.__mro__)
 
+
     ##########################
-    ##       training       ##
+    ##       TRAINING       ##
     ##########################
 
     run_id = cfg.get("subdir") or ""
     run_dir = Path(swm.data.utils.get_cache_dir(), run_id)
-
-    logger = None
-    if cfg.wandb.enabled:
-        logger = WandbLogger(**cfg.wandb.config)
-        logger.log_hyperparams(OmegaConf.to_container(cfg))
 
     csv_logger = CSVLogger(save_dir="logs", name="csv")
 
@@ -284,33 +272,20 @@ def run(cfg):
     with open(run_dir / "config.yaml", "w") as f:
         OmegaConf.save(cfg, f)
 
-    object_dump_callback = ModelObjectCallBack(
-        dirpath=run_dir, filename=cfg.output_model_name, epoch_interval=1,
-    )
+    all_callbacks = collect_all_callbacks(cfg, RUN_OUTPUT_DIR)
 
-    early_stop_callback = EarlyStopping(
-        monitor="validate/loss",
-        patience=cfg.early_stop_patience,
-        mode="min",
-        min_delta=cfg.early_stop_min_improv,
-        verbose=True,
-    )
-
-
-    is_validation = cfg.get("run_validation", False)
-    if is_validation:
+    run_baseline_ckpt = cfg.get("run_baseline_ckpt", False)
+    if run_baseline_ckpt:       # Evaluate the model on the official lewm weights
 
         checkpoint_path = "/home/student/data/baseline_ckpt/hf_cube/weights.pt"
         state_dict = torch.load(checkpoint_path, map_location="cpu")
         world_model.model.load_state_dict(state_dict, strict=True)
         print(f"\n\nLoaded pretrained weights into the model from {checkpoint_path}. Starting training with these weights.")
-
-        ### Validate the model before training to check if everything is working correctly
-        print(f"\n\nCheckpoint found at {checkpoint_path}. Validating model with this checkpoint before training.")
+        print(f"\n\nCheckpoint found at {checkpoint_path}. Validating model with this checkpoint.")
 
         trainer = pl.Trainer(
             **cfg.trainer,
-            callbacks=[object_dump_callback, early_stop_callback],
+            callbacks=all_callbacks,
             num_sanity_val_steps=0,
             logger=logger,
             enable_checkpointing=False,
@@ -322,30 +297,14 @@ def run(cfg):
             ckpt_path=None,
         )
 
-        print("\n\nValidation complete. ")
+        print("\n\nValidation on baseline checkpoint complete. ")
         
-        trainer = pl.Trainer(
-            **cfg.trainer,
-            callbacks=[object_dump_callback],
-            num_sanity_val_steps=1,
-            logger= logger,                               #[logger, csv_logger],
-            enable_checkpointing=True,
-        )
-
-        manager = spt.Manager(
-            trainer=trainer,
-            module=world_model,
-            data=data_module,
-            ckpt_path=None  # run_dir / f"{cfg.output_model_name}_weights.ckpt",
-        )
-
-        manager()
         return
     else: 
-        print("\n\nNo checkpoint found. Starting training from scratch.\n\n")
+        print("\n\nNo baseline checkpoint loaded. Starting training from scratch.\n\n")
         trainer = pl.Trainer(
             **cfg.trainer,
-            callbacks=[object_dump_callback, early_stop_callback],
+            callbacks=all_callbacks,
             num_sanity_val_steps=0,
             logger=logger,
             enable_checkpointing=False,
@@ -364,7 +323,23 @@ def run(cfg):
             ckpt_path=None  # run_dir / f"{cfg.output_model_name}_weights.ckpt",
         )
 
+        print("train batches =", len(train_loader))
+        print("val batches   =", len(val_loader))
+
+        trainer = manager.trainer
+        print("trainer.limit_train_batches =", trainer.limit_train_batches)
+        print("trainer.limit_val_batches   =", trainer.limit_val_batches)
+        print("trainer.fast_dev_run        =", trainer.fast_dev_run)
+        print("trainer.overfit_batches     =", trainer.overfit_batches)
+
         manager()
+
+        print("\n\n -- DONE WITH TRAINING -- \n\n")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        torch.save(world_model.model.state_dict(),os.path.join(SAVE_CKPT_PATH, f"weights_{timestamp}.pt"))
+        print(f"Saved checkpoint: {SAVE_CKPT_PATH}/weights_{timestamp}.pt")
+    
         return
 
 if __name__ == "__main__":
