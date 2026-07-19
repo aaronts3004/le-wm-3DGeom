@@ -14,10 +14,16 @@ from datetime import datetime
 import torch
 from lightning.pytorch.loggers import WandbLogger, CSVLogger
 from omegaconf import OmegaConf, open_dict
+from scipy.stats import pearsonr
+import umap
+from sklearn.manifold import TSNE
 
 from module import SIGReg
-from utils import get_column_normalizer, get_img_preprocessor, instantiate_world_model, sanity_check_on_loaded_batch, depth_img_preprocessor, collect_all_callbacks
-from utils import ModelObjectCallBack
+from utils import get_column_normalizer, get_img_preprocessor, instantiate_world_model, \
+            sanity_check_on_loaded_batch, collect_all_callbacks
+from utils import ModelObjectCallBack, LinearProbeCallback
+
+from preprocessing import depth_img_preprocessor, normal_img_preprocessor, rgbd_img_preprocessor, da3_img_preprocessor, point_map_preprocessor
 
 from torch.utils.data import Subset
 import random
@@ -67,9 +73,9 @@ def lejepa_forward(self, batch, stage, cfg):
     output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
     output["sigreg_loss"]= self.sigreg(emb.transpose(0, 1))
     output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]  
-
+    
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
-    self.log_dict(losses_dict, on_step=False, on_epoch=True, sync_dist=True)
+    self.log_dict(losses_dict, on_step=True, on_epoch=True, sync_dist=True)
 
     # print("*****************************************")
     return output
@@ -85,24 +91,42 @@ def run(cfg):
     dataset_name_without_full_path = cfg.data.dataset.name.split("/")[-1]
     SAVE_CKPT_PATH = f"/home/student/users/Public_workspace/le-wm-3DGeom/models/le-wm/outputs/checkpoints/{dataset_name_without_full_path}/"
     os.makedirs(SAVE_CKPT_PATH, exist_ok=True)
-    RUN_OUTPUT_DIR=f"/home/student/users/Public_workspace/le-wm-3DGeom/models/le-wm/outputs/results_09_07/{dataset_name_without_full_path}/{run_timestamp}"
+    RUN_OUTPUT_DIR=f"/home/student/users/Public_workspace/le-wm-3DGeom/models/le-wm/outputs/results_16_07/{dataset_name_without_full_path}/{run_timestamp}"
     os.makedirs(RUN_OUTPUT_DIR,exist_ok=True )
 
     DEPTH = "depth" in cfg.data.dataset.name.lower()
+    NORMALS = "normals" in cfg.data.dataset.name.lower()
+    POINT_MAP = "point" in cfg.data.dataset.name.lower()
+    RGB_DEPTH = "rgb_depth" in cfg.data.dataset.name.lower()
+    DA3_DEPTH = "da3" in  cfg.data.dataset.name.lower()
 
     dataset = swm.data.HDF5Dataset(**cfg.data.dataset, transform=None)
 
-    if DEPTH: 
-        transforms = [depth_img_preprocessor(cfg.img_size)]
+    if (RGB_DEPTH):
+        print("Initializing RGBD preprocessor\n")
+        transforms = [rgbd_img_preprocessor(img_size=cfg.img_size,)]       # RGB+D
+    elif (DA3_DEPTH): 
+        print("Initializing DA3 preprocessor\n")
+        transforms = [da3_img_preprocessor(img_size=cfg.img_size)]
+    elif DEPTH: 
+        print("Initializing DEPTH preprocessor\n")
+        transforms = [depth_img_preprocessor(cfg.img_size)]                             # DEPTH
+    elif POINT_MAP: 
+        print("Initializing POINT MAP preprocessor\n")
+        transforms = [point_map_preprocessor(cfg.img_size)]
+    elif NORMALS: 
+        print("Initializing NORMS preprocessor\n")
+        transforms = [normal_img_preprocessor(cfg.img_size)]                            # NORMALS
     else:
-        transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size, depth=DEPTH)]
-
+        print("Initializing RGB preprocessor\n")
+        transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]    # RGB
     
     logger = None
     if cfg.wandb.enabled:
         logger = WandbLogger(**cfg.wandb.config)
         logger.log_hyperparams(OmegaConf.to_container(cfg))
 
+    print("Experimenting logger")
 
     print(dataset.clip_indices[:10])
     print(dataset.clip_indices[-10:])
@@ -188,9 +212,15 @@ def run(cfg):
 
     train_episode_count = cfg.train_num_episodes
 
+    print("\n\ntrain_episode_count=", train_episode_count)
+
     # Fixed validation split:
     selected_train_episodes = set(all_episode_ids[0:train_episode_count])
     selected_val_episodes   = set(all_episode_ids[train_episode_count:train_episode_count+cfg.val_num_episodes])
+
+    print(selected_train_episodes)
+    print(selected_val_episodes)
+    print(dataset.episode_ids[:20])
 
     train_indices = [
         idx
@@ -214,9 +244,9 @@ def run(cfg):
         f"val episodes={len(selected_val_episodes)} "
         f"val samples={len(val_set)}"
     )
-    print(train_indices[:20])
-    print(train_indices[-20:])
-    print(dataset.clip_indices[:20])
+    print("train_indices[:20]=", train_indices[:20])
+    print("train_indices[-20:]=",train_indices[-20:])
+    print("clip_indices[20:]=", dataset.clip_indices[:20])
 
     train_loader = torch.utils.data.DataLoader(train_set,**cfg.loader,shuffle=True,drop_last=True,generator=rnd_gen,)
 
@@ -277,27 +307,174 @@ def run(cfg):
     run_baseline_ckpt = cfg.get("run_baseline_ckpt", False)
     if run_baseline_ckpt:       # Evaluate the model on the official lewm weights
 
-        checkpoint_path = "/home/student/data/baseline_ckpt/hf_cube/weights.pt"
+        ### Run with 
+        '''
+        python train.py data=ogb data.dataset.name=/home/student/data/ogbench/cube_single_expert wandb.config.name=CKPT_exp wm.history_size=3 wm.num_preds=2 train_num_episodes=100 val_num_episodes=100 run_baseline_ckpt=True
+
+        plus change configs: 
+        (1): official RGB lewm checkpoint: 
+            - checkpoint path: "/home/student/data/baseline_ckpt/hf_cube/weights.pt"
+            - wm.history_size=3 + wm.num_preds=2
+            - data.dataset.name = cube_single_expert
+        (2): RGB trained on 100 episodes, 100 epochs: 
+            - checkpoint path: /home/student/users/Public_workspace/le-wm-3DGeom/models/le-wm/outputs/checkpoints/cube_single_expert/weights_20260708_000215.pt
+            - wm.history_size=1 + wm.num_preds=1
+            - data.dataset.name = cube_single_expert
+        (3): DEPTH trained on 100 episodes, 100 epochs: 
+            - checkpoint path: /home/student/users/Public_workspace/le-wm-3DGeom/models/le-wm/outputs/checkpoints/front_pixels_depth_train_1000_val_100_episodes//weights_20260707_215039.pt
+            - wm.history_size=1 + wm.num_preds=1
+            - data.dataset.name = "/home/student/data/ogbench/front_pixels_depth_train_1000_val_100_episodes"
+        (4): POINT MAP trained on 100 episodes, for 5 epochs
+            - /home/student/users/Public_workspace/le-wm-3DGeom/models/le-wm/outputs/checkpoints/gt_point_map_100_val_10_episodes//weights_20260716_114513.pt
+            - wm.history_size=1 + wm.num_preds=1
+            - data.dataset.name = gt_point_map_100_val_10_episodes
+        '''
+
+        checkpoint_path = "/home/student/users/Public_workspace/le-wm-3DGeom/models/le-wm/outputs/checkpoints/cube_single_expert/weights_20260708_000215.pt"
         state_dict = torch.load(checkpoint_path, map_location="cpu")
         world_model.model.load_state_dict(state_dict, strict=True)
-        print(f"\n\nLoaded pretrained weights into the model from {checkpoint_path}. Starting training with these weights.")
+
+        print(f"\n\nLoaded pretrained weights into the model from {checkpoint_path}.")
         print(f"\n\nCheckpoint found at {checkpoint_path}. Validating model with this checkpoint.")
 
-        trainer = pl.Trainer(
-            **cfg.trainer,
-            callbacks=all_callbacks,
-            num_sanity_val_steps=0,
-            logger=logger,
-            enable_checkpointing=False,
+        latent_plots_dir = "latent_plots/"
+        pred_latents = []
+        gt_states = []
+
+        MAX_BATCHES = 100
+
+        with torch.no_grad():
+            for i, batch in enumerate(val_loader):
+
+                enc = world_model.model.encode(batch) # [B,T,D]     
+                pred_latents.append(enc["emb"].reshape(-1, 192).cpu().numpy())
+
+                obs = batch["observation"]      # [B,26]
+                print("obs.shape=", obs.shape)
+                physical_state = torch.cat([
+                    obs[:, :, 12:15],          # ee    
+                    obs[:, :, 19:22],          # cube
+                ], dim=-1)
+
+                gt_states.append(physical_state.reshape(-1, 6).cpu().numpy())
+                print("encoded batch=", i)
+
+                if i >= MAX_BATCHES:
+                    break
+
+        print("Done with latent encoding")
+        
+        pred_latents = np.concatenate(pred_latents)   # [N, D]
+        gt_states    = np.concatenate(gt_states)      # [N, 6]
+
+        N = pred_latents.shape[0]
+        print(f"Computed N={N} latents")
+        print("pred_latents.shape=", pred_latents.shape)
+        print("gt_state.shape=", gt_states.shape)
+
+        idx1 = torch.randint(0,N,(10000,))
+        idx2 = torch.randint(0,N,(10000,))
+
+        d_lat = np.linalg.norm(
+            pred_latents[idx1] - pred_latents[idx2],
+            axis=1,
         )
 
-        trainer.validate(
-            model=world_model,
-            datamodule=data_module,
-            ckpt_path=None,
+        d_state = np.linalg.norm(
+            gt_states[idx1] - gt_states[idx2],
+            axis=1,
+        )
+        r, p = pearsonr(d_lat,d_state)
+        print("PEARSON=", r)
+
+        plt.figure(figsize=(6,6))
+
+        plt.scatter(
+            d_state,
+            d_lat,
+            s=2,
+            alpha=0.15,
         )
 
-        print("\n\nValidation on baseline checkpoint complete. ")
+        plt.xlabel("Physical distance")
+        plt.ylabel("Latent distance")
+        plt.title(f"Pearson r = {r:.3f}")
+        plt.savefig(f"{latent_plots_dir}/distance_scatter.png")
+        plt.close() 
+
+        plt.figure()
+
+        plt.hist(
+            d_lat,
+            bins=100,
+        )
+        plt.savefig(f"{latent_plots_dir}/latent_distance_hist.png")
+        plt.close()
+
+        embedding = umap.UMAP().fit_transform(pred_latents)
+        plt.scatter(
+            embedding[:,0],
+            embedding[:,1],
+            c=gt_states[:,3],   # cube x
+            s=3,
+            cmap="viridis",
+        )
+        plt.savefig(f"{latent_plots_dir}/UMAP.png")
+        plt.close()
+
+        for perplexity in [1,10,20,30,50]:
+
+            tsne = TSNE(
+                n_components=2,
+                perplexity=perplexity,
+                learning_rate="auto",
+                init="pca",
+                random_state=42,
+            )
+
+            latent_2d = tsne.fit_transform(
+                pred_latents
+            )
+
+            titles = [
+                "EE X",
+                "EE Y",
+                "Block X",
+                "Block Y",
+            ]
+
+            for i, t in enumerate(titles):
+
+                plt.figure(figsize=(7,6))
+                plt.scatter(
+                    latent_2d[:,0],
+                    latent_2d[:,1],
+                    c=gt_states[:,i],   # state (i)
+                    s=5,
+                    alpha=0.7,
+                    cmap="viridis",
+                )
+
+                plt.colorbar(label=f"t")
+                plt.title(f"t-SNE colored by {t}")
+                plt.xlabel("t-SNE 1")
+                plt.ylabel("t-SNE 2")
+                plt.savefig(f"{latent_plots_dir}/cube_tsne_{t}_perpl_{perplexity}.png")
+
+
+
+        # trainer = pl.Trainer(
+        #     **cfg.trainer,
+        #     callbacks=all_callbacks,
+        #     num_sanity_val_steps=0,
+        #     logger=logger,
+        #     enable_checkpointing=False,
+        # )
+
+        # probe_callback = LinearProbeCallback()
+        # probe_callback.run_probe_call(train_loader=train_loader, val_loader=val_loader, trainer=trainer, pl_module=world_model)
+
+        # print("\n\nValidation on baseline checkpoint complete. ")
         
         return
     else: 
@@ -309,12 +486,6 @@ def run(cfg):
             logger=logger,
             enable_checkpointing=False,
         )
-
-        # trainer.validate(
-        #     model=world_model,
-        #     datamodule=data_module,
-        #     ckpt_path=None,
-        # )
 
         manager = spt.Manager(
             trainer=trainer,

@@ -1,0 +1,24 @@
+\begin{tabular}{lllrrr}
+\toprule
+probe & model & split & mse & r2 & pearson \\
+\midrule
+joint_position & LINEAR & train & 0.363 & 0.655 & 0.714 \\
+joint_position & LINEAR & val & 0.374 & 0.596 & 0.628 \\
+joint_velocity & LINEAR & train & 0.763 & 0.248 & 0.414 \\
+joint_velocity & LINEAR & val & 0.690 & 0.249 & 0.409 \\
+ee_position & LINEAR & train & 0.033 & 0.968 & 0.984 \\
+ee_position & LINEAR & val & 0.033 & 0.954 & 0.978 \\
+ee_yaw & LINEAR & train & 0.982 & 0.020 & 0.141 \\
+ee_yaw & LINEAR & val & 0.958 & 0.014 & 0.171 \\
+gripper_opening & LINEAR & train & 0.052 & 0.948 & 0.974 \\
+gripper_opening & LINEAR & val & 0.047 & 0.953 & 0.976 \\
+gripper_contact & LINEAR & train & 0.133 & 0.870 & 0.933 \\
+gripper_contact & LINEAR & val & 0.135 & 0.868 & 0.932 \\
+block_position & LINEAR & train & 0.003 & 0.997 & 0.998 \\
+block_position & LINEAR & val & 0.004 & 0.995 & 0.998 \\
+block_quaternion & LINEAR & train & 0.854 & 0.040 & 0.188 \\
+block_quaternion & LINEAR & val & 0.548 & -0.489 & 0.185 \\
+block_yaw & LINEAR & train & 0.984 & 0.015 & 0.123 \\
+block_yaw & LINEAR & val & 1.030 & -1.378 & -0.160 \\
+\bottomrule
+\end{tabular}

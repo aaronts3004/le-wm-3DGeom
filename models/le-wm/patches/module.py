@@ -13,7 +13,7 @@ from prettytable import PrettyTable
 from lightning.pytorch.core.optimizer import LightningOptimizer
 from .optim import create_optimizer, create_scheduler
 from stable_pretraining.utils.error_handling import catch_errors_class
-
+import time
 
 
 @catch_errors_class()
@@ -212,7 +212,10 @@ class Module(pl.LightningModule):
         batch["batch_idx"] = batch_idx
 
 
+        print("\n\nTRAIN STEP START\n\n")
+
         state = self(batch, stage="fit")
+
 
 
         # Resolve optimizers and schedulers (can be single or list)
@@ -240,6 +243,7 @@ class Module(pl.LightningModule):
             schedulers = [None]
 
         # Compute gradients once for the joint loss
+        print("\n\nCUDA Memory before backward: ", torch.cuda.max_memory_allocated() / 1024**3)
         self.manual_backward(state["loss"])
 
         self.after_manual_backward()
@@ -341,8 +345,13 @@ class Module(pl.LightningModule):
 
 
     def validation_step(self, batch, batch_idx):
+        print("\n\nENTER VALIDATION STEP\n\n")
+
         batch["batch_idx"] = batch_idx
         state = self(batch, stage="validate")
+
+        print("\n\nEXIT VALIDATION STEP\n\n")
+
         
         return state
 

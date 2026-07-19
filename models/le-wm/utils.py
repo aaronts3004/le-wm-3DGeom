@@ -12,45 +12,18 @@ import numpy as np
 from PIL import Image
 
 import stable_pretraining as spt
+from stable_worldmodel.wm.prejepa.module import create_backbone, CausalPredictor
+from stable_worldmodel.wm.prejepa.module import Embedder as Prejepa_Embedder
+from stable_worldmodel.wm.prejepa import PreJEPA
 from jepa import JEPA
 from module import ARPredictor, Embedder, MLP, SIGReg
 import torchvision.transforms as T
-import torchvision.transforms as T
 import torch
-
-def depth_img_preprocessor(img_size):
-    resize = T.Resize(
-        (img_size, img_size),
-        interpolation=T.InterpolationMode.BILINEAR,
-    )
-
-    def transform(steps):
-        # [T, 1, H, W]
-        depth = steps["pixels"].float()
-
-        # Remove NaNs/Infs
-        depth = torch.nan_to_num(depth, nan=0.5, posinf=3.0, neginf=0.5)
-
-        # Clip to rendering range
-        depth = depth.clamp(0.5, 3.0)
-
-        # Resize
-        depth = resize(depth)
-
-        # Normalize to [-1, 1]
-        depth = (depth - 0.5) / (3.0 - 0.5)
-        depth = depth * 2.0 - 1.0
-
-        # Repeat to RGB channels
-        depth = depth.repeat(1, 3, 1, 1)
-
-        steps["pixels"] = depth
-        return steps
-
-    return transform
+import torch.nn as nn
+import time
 
 
-def get_img_preprocessor(source: str, target: str, depth: bool, img_size: int = 224):
+def get_img_preprocessor(source: str, target: str, img_size: int = 224):
     imagenet_stats = dt.dataset_stats.ImageNet
     to_image = dt.transforms.ToImage(
         **imagenet_stats,
@@ -142,7 +115,7 @@ class ModelObjectCallBack(Callback):
         super().__init__()
         self.dirpath = Path(dirpath)
         self.filename = filename
-        self.epoch_interval = epoch_interval
+        self.epoch_interval = 1
 
     def on_train_epoch_end(self, trainer, pl_module):
         super().on_train_epoch_end(trainer, pl_module)
@@ -152,9 +125,13 @@ class ModelObjectCallBack(Callback):
             / f"{self.filename}_epoch_{trainer.current_epoch + 1}_object.ckpt"
         )
 
+        print("Saving ckpt to ", output_path)
+
         if trainer.is_global_zero:
             if (trainer.current_epoch + 1) % self.epoch_interval == 0:
                 self._dump_model(pl_module.model, output_path)
+
+                print("\n\nCKPT SAVED!\n\n")
 
             # save final epoch
             if (trainer.current_epoch + 1) == trainer.max_epochs:
@@ -171,12 +148,20 @@ class ModelObjectCallBack(Callback):
 
 
 def instantiate_world_model(cfg):
+
+    if cfg.concat_RGBD:
+        print("CONCATENATING RGB+D")
+        num_vit_channels = 4
+    else: 
+        num_vit_channels = 3
+
     encoder = spt.backbone.utils.vit_hf(
         cfg.encoder_scale,
         patch_size=cfg.patch_size,
         image_size=cfg.img_size,
         pretrained=False,
         use_mask_token=False,
+        num_channels=num_vit_channels
     )
 
     hidden_dim = encoder.config.hidden_size
@@ -221,14 +206,57 @@ def instantiate_world_model(cfg):
     return world_model
 
 
+def instantiate_prejepa_model(cfg):
 
-def collect_all_callbacks(cfg, run_dir): 
+    # Instantiate a pretrained backbone as the encoder, freeze its weights
+    # without the option for a video encoder or CNN encoder
+    encoder = create_backbone(cfg.backbone.name)
+    encoder.eval()
+    encoder.requires_grad_(False)
+
+    embed_dim = encoder.config.hidden_size + cfg.wm.action_encoding
+    num_patches = (cfg.img_size // cfg.patch_size) ** 2
+    effective_act_dim = cfg.data.dataset.frameskip * cfg.wm.action_dim
+
+    predictor = CausalPredictor(
+        num_patches=num_patches,
+        num_frames=cfg.wm.history_size,
+        dim=embed_dim,
+        **cfg.predictor,
+    )
+
+    action_encoder = Prejepa_Embedder(
+        in_chans=effective_act_dim,
+        emb_dim=int(cfg.wm.action_encoding)
+    )
+
+    extra_encoders = nn.ModuleDict({
+        "action": action_encoder,
+    })
+
+    world_model = PreJEPA(
+        history_size=cfg.wm.history_size,
+        num_pred=cfg.wm.num_preds,
+        interpolate_pos_encoding=cfg.backbone.interpolate_pos_encoding,
+        encoder=encoder,
+        predictor=predictor,
+        extra_encoders=extra_encoders,
+    )
+
+    return world_model
+
+    
+
+
+
+def collect_all_callbacks(cfg, run_dir, model="jepa"): 
 
     all_callbacks = []
     if cfg.train_epochs.get("save_ckpt_every_epochs", 0) != 0: 
-        print("\n\nSaving checkpoint every N epochs!")
+        N_epochs = cfg.get("save_ckpt_every_epochs")
+        print("\n\nSaving checkpoint every N epochs! N=", N_epochs )
         object_dump_callback = ModelObjectCallBack(
-            dirpath=run_dir, filename=cfg.output_model_name, epoch_interval=cfg.get("save_ckpt_every_epochs"),
+            dirpath=run_dir, filename=cfg.output_model_name, epoch_interval=N_epochs,
         )
         all_callbacks.append(object_dump_callback)
 
@@ -252,13 +280,13 @@ def collect_all_callbacks(cfg, run_dir):
 
     if cfg.train_epochs.get("linear_probing_active", False):
         print("\nLinear Probing Callback active")
-        probing_callback = LinearProbeCallback(every_n_epochs=1)
+        probing_callback = LinearProbeCallback(every_n_epochs=1, max_train_batches=150, max_val_batches=15, model=model)
         all_callbacks.append(probing_callback)
 
 
     if cfg.train_epochs.get("rnd_action_latent_mse", False):
         print("\RandomActionLatentMSECallback active")
-        random_action = RandomActionLatentMSECallback()
+        random_action = RandomActionLatentMSECallback(every_n_epochs=1, ctx_len=cfg.wm.history_size, model=model)
         all_callbacks.append(random_action)
 
     print("all callbacks=")

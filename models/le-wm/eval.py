@@ -13,6 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 from sklearn import preprocessing
 from torchvision.transforms import v2 as transforms
 import stable_worldmodel as swm
+from preprocessing_eval import normal_transform
 
 def img_transform(cfg):
     transform = transforms.Compose(
@@ -46,9 +47,40 @@ def get_dataset(cfg, dataset_name):
     )
     return dataset
 
+
+
+'''
+
+TODO:
+- Run with: python eval.py --config-name=cube_RGB.yaml (or other yaml launch files)
+
+To edit a yaml launch file:
+- Set the dataset path in eval.dataset_name
+- Set the ckpt path in policy (without the "_object.ckpt" extension !)
+
+Other metrics (+ default value): 
+- eval.goal_offset_steps: (25) at which world-model-timestep does the goal happen
+- plan_config.horizon (5): CEM solver block size (executing inside imagination / CEM solver)
+- plan_config.receding_horizon (5): number of actions actually executed before re-planning; is equal to frameskip
+- eval.eval_budget (50): execute maximum 50 real actions, if goal not reached until then, then is failure; 
+                         even if the goal was not reached at (goal_offset_steps), the WM can still recover and reach it later
+
+
+- eval.num_eval (50): number of episodes to rollout
+
+
+'''
+
+
+
+
 @hydra.main(version_base=None, config_path="./config/eval", config_name="pusht")
 def run(cfg: DictConfig):
     """Run evaluation of dinowm vs random policy."""
+
+    # by default, horizon=5,  action_block=5 = frameskip, eval_budget=50
+    # horizon     ->  size of one planning block, for one new planning step how long to "imagine"
+    # eval_budget ->  for how many real environment steps is the model allowed to execute
     assert (
         cfg.plan_config.horizon * cfg.plan_config.action_block <= cfg.eval.eval_budget
     ), "Planning horizon must be smaller than or equal to eval_budget"
@@ -57,16 +89,34 @@ def run(cfg: DictConfig):
     cfg.world.max_episode_steps = 2 * cfg.eval.eval_budget
     world = swm.World(**cfg.world, image_shape=(224, 224))
 
+    print("Running eval with the following config:")
+    print("horizon=", cfg.plan_config.horizon)
+    print("action block=", cfg.plan_config.action_block)
+    print("eval budget=", cfg.eval.eval_budget)
+
     # create the transform
-    transform = {
-        "pixels": img_transform(cfg),
-        "goal": img_transform(cfg),
-    }
+    if cfg.dataset.modality == "RGB": 
+        transform = {"pixels": img_transform(cfg),"goal": img_transform(cfg),}
+    elif cfg.dataset.modality == "NRM": 
+        transform = {"pixels": normal_transform(cfg),"goal": normal_transform(cfg),}
+    else: 
+        print("Unsupported modality for transform")
+        exit(1)
 
     dataset = get_dataset(cfg, cfg.eval.dataset_name)
+
     stats_dataset = dataset  # get_dataset(cfg, cfg.dataset.stats)
     col_name = "episode_idx" if "episode_idx" in dataset.column_names else "ep_idx"
     ep_indices, _ = np.unique(stats_dataset.get_col_data(col_name), return_index=True)
+
+    for idx in ep_indices[:5]:
+        print("idx =", idx)
+        row = dataset.get_row_data([idx])
+        print(type(row))
+
+    print("number of unique episodes in dataset: ", ep_indices.shape)
+
+
 
     process = {}
     for col in cfg.dataset.keys_to_cache:
@@ -97,6 +147,10 @@ def run(cfg: DictConfig):
         )
 
     else:
+
+        print("Running with random policy ! Choose a different cfg.policy")
+        exit(1)
+
         policy = swm.policy.RandomPolicy()
 
     results_path = (
@@ -117,8 +171,25 @@ def run(cfg: DictConfig):
 
     # remove all the lines of dataset for which dataset['step_idx'] > max_start_per_row
     valid_mask = dataset.get_col_data("step_idx") <= max_start_per_row
+    ep_idx = dataset.get_col_data("ep_idx")
+
+    if getattr(dataset, "orig_to_internal", None) is not None:
+        mapper = np.vectorize(dataset.orig_to_internal.__getitem__)
+        ep_idx = mapper(ep_idx)
+
+    valid_mask &= (
+        ep_idx >= cfg.eval.first_episode
+    ) & (
+        ep_idx <= cfg.eval.last_episode
+    )
+
     valid_indices = np.nonzero(valid_mask)[0]
     print(valid_mask.sum(), "valid starting points found for evaluation.")
+
+    print("Unique internal episodes:",np.unique(ep_idx[valid_mask]))
+
+    # valid_indices = np.nonzero(valid_mask)[0]
+    # print(valid_mask.sum(), "valid starting points found for evaluation.")
 
     g = np.random.default_rng(cfg.seed)
     random_episode_indices = g.choice(
@@ -133,20 +204,30 @@ def run(cfg: DictConfig):
     eval_episodes = dataset.get_row_data(random_episode_indices)[col_name]
     eval_start_idx = dataset.get_row_data(random_episode_indices)["step_idx"]
 
+    print("eval_episodes min:", eval_episodes.min())
+    print("eval_episodes max:", eval_episodes.max())
+    print("num episodes:", len(dataset.offsets))
+    print(dataset.get_col_data("ep_idx")[:20])
+    print(dataset.get_col_data("ep_idx").max())
+
+    print("\n\nALL EVAL EPISODE INDICES: ", eval_episodes)
+
+    print("\n\nNumber of episodes to rollout = ", len(eval_episodes))
+
     if len(eval_episodes) < cfg.eval.num_eval:
         raise ValueError("Not enough episodes with sufficient length for evaluation.")
 
     world.set_policy(policy)
 
     start_time = time.time()
-    metrics = world.evaluate_from_dataset(
-        dataset,
-        start_steps=eval_start_idx.tolist(),
-        goal_offset_steps=cfg.eval.goal_offset_steps,
-        eval_budget=cfg.eval.eval_budget,
+    metrics = world.evaluate(
+        dataset=dataset,
         episodes_idx=eval_episodes.tolist(),
+        start_steps=eval_start_idx.tolist(),
+        goal_offset=cfg.eval.goal_offset_steps,
+        eval_budget=cfg.eval.eval_budget,
         callables=OmegaConf.to_container(cfg.eval.get("callables"), resolve=True),
-        video_path=results_path,
+        video=results_path,
     )
     end_time = time.time()
     
@@ -154,6 +235,8 @@ def run(cfg: DictConfig):
 
     results_path = results_path / cfg.output.filename
     results_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print("Writing results to: ", results_path)
 
     with results_path.open("a") as f:
         f.write("\n")  # separate from previous runs

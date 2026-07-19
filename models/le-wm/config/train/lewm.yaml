@@ -1,16 +1,18 @@
 defaults:
   - _self_
-  - data: pusht
+  - data: ogb
 
 output_model_name: lewm
 subdir: ${hydra:job.id}
 run_validation: False
 run_baseline_ckpt: False
-train_num_episodes: 10
-val_num_episodes: 1
+train_num_episodes: 9000
+val_num_episodes: 1000
 
+concat_RGBD: False
+concat_dataset: /home/student/data/ogbench/front_pixels_RGB_DEPTH_train_100_val_10_episodes
 
-num_workers: 6
+num_workers: 0
 train_split: 0.9
 seed: 3072
 img_size: 224
@@ -19,15 +21,15 @@ encoder_scale: tiny
 dump_object: True
 
 trainer:
-  max_epochs: 1
+  max_epochs: 3
   devices: auto
   accelerator: gpu
   precision: bf16
   gradient_clip_val: 1.0
 
 train_epochs:
-  check_val_every_n_epoch: 5            # reduce validation and ckpts
-  save_ckpt_every_epochs: 0
+  check_val_every_n_epoch: 1            # reduce validation and ckpts
+  save_ckpt_every_epochs: 1
 
   early_stop_active: False              # early stopping
   early_stop_patience: 10
@@ -38,7 +40,7 @@ train_epochs:
   rnd_action_latent_mse: True
 
 loader:
-  batch_size: 64
+  batch_size: 32
   num_workers: ${num_workers}
   persistent_workers: True
   prefetch_factor: 3
@@ -54,15 +56,15 @@ wandb:
   config:
     entity: lewm_3DGeo
     project: final_results
-    name: OGB_DEPTH_1000
+    name: RGB_10k
     id: ${subdir}
     resume: never
     log_model: False
 
 wm:
   type: lewm
-  history_size: 1
-  num_preds: 1
+  history_size: 3
+  num_preds: 2
   embed_dim: 192
 
 predictor:

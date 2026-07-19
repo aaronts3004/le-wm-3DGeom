@@ -4,6 +4,8 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
+import torchvision.utils as vutils
+import matplotlib.pyplot as plt
 
 def detach_clone(v):
     return v.detach().clone() if torch.is_tensor(v) else v
@@ -26,17 +28,77 @@ class JEPA(nn.Module):
         self.projector = projector or nn.Identity()
         self.pred_proj = pred_proj or nn.Identity()
 
+        self.sanity_checks = 0
+
     def encode(self, info):
         """Encode observations and actions into embeddings.
         info: dict with pixels and action keys
         """
 
         pixels = info['pixels'].float()
+
+        # if self.sanity_checks == 0: 
+
+        #     imgs = pixels[0]          # (T, C, H, W)
+
+        #     mean = torch.tensor([0.485, 0.456, 0.406], device=imgs.device)[:, None, None]
+        #     std  = torch.tensor([0.229, 0.224, 0.225], device=imgs.device)[:, None, None]
+
+        #     ### RGB UNNORMALIZATION
+        #     vis = imgs * std + mean
+        #     vis = vis.clamp(0, 1)
+
+        #     ### DEPTH UNNORMALIZATION
+        #     # vis = (imgs + 1) / 2      # [-1,1] -> [0,1]
+
+        #     vutils.save_image(
+        #         vis,
+        #         "check_encoder_input.png",
+        #         nrow=imgs.shape[0],
+        #     )
+
+        #     self.sanity_checks += 1
+
+
+            # first_frame = pixels[0, 0]      # B=0, T=0, C=0
+            # plt.figure(figsize=(6,4))
+            # plt.hist(first_frame.flatten().cpu().numpy(), bins=100)
+            # plt.xlabel("Pixel value")
+            # plt.ylabel("Count")
+            # plt.title("Encoder input distribution (single frame)")
+            # plt.tight_layout()
+            # plt.savefig("depth_distribution.png", dpi=300)
+            # plt.close()
+
+            # plt.figure(figsize=(5,5))
+            # plt.imshow(first_frame, cmap="viridis", vmin=-1, vmax=1)
+            # plt.colorbar()
+            # plt.savefig("first_frame_depth_map_cmap.png")
+            # plt.close()
+
+            # print("Encoder input:")
+            # print(f"shape = {pixels.shape}")
+            # print(f"min   = {pixels.min().item():.4f}")
+            # print(f"max   = {pixels.max().item():.4f}")
+            # print(f"mean  = {pixels.mean().item():.4f}")
+            # print(f"std   = {pixels.std().item():.4f}")
+
+            # num_pos = (pixels >= 0.999).float().mean()
+            # num_neg = (pixels <= -0.999).float().mean()
+
+            # print(f"% pixels at +1 : {100*num_pos:.2f}%")
+            # print(f"% pixels at -1 : {100*num_neg:.2f}%")
+
+            # print(torch.unique(first_frame).numel())
+            # print(torch.quantile(first_frame.flatten(), torch.tensor([0.0,0.25,0.5,0.75,0.9,0.99,1.0])))
+
+
         b = pixels.size(0)
         pixels = rearrange(pixels, "b t ... -> (b t) ...") # flatten for encoding
         output = self.encoder(pixels, interpolate_pos_encoding=True)
         pixels_emb = output.last_hidden_state[:, 0]  # cls token
         emb = self.projector(pixels_emb)
+        
         info["emb"] = rearrange(emb, "(b t) d -> b t d", b=b)
 
         if "action" in info:
@@ -62,16 +124,26 @@ class JEPA(nn.Module):
         """Rollout the model given an initial info dict and action sequence.
         pixels: (B, S, T, C, H, W)
         action_sequence: (B, S, T, action_dim)
-         - S is the number of action plan samples
-         - T is the time horizon
+         - S is the number of action plan samples                   # (by default 300)
+         - T is the planning time horizon
         """
 
         assert "pixels" in info, "pixels not in info_dict"
         H = info["pixels"].size(2)
+        
+        # print("info['pixels'].shape=", info['pixels'].shape)
+        # print("action_sequence.shape=", action_sequence.shape)
+
+
         B, S, T = action_sequence.shape[:3]
-        act_0, act_future = torch.split(action_sequence, [H, T - H], dim=2)
+        # print(f"B={B},H={H},S={S},T={T}")
+
+
+        act_0, act_future = torch.split(action_sequence, [H, T - H], dim=2)         # split into 2 chunks, one of size (H) one of size(T-H)
         info["action"] = act_0
         n_steps = T - H
+
+        # print("n_steps=", n_steps)
 
         # copy and encode initial info dict
         _init = {k: v[:, 0] for k, v in info.items() if torch.is_tensor(v)}
@@ -84,17 +156,26 @@ class JEPA(nn.Module):
         act = rearrange(act_0, "b s ... -> (b s) ...")
         act_future = rearrange(act_future, "b s ... -> (b s) ...")
 
+        # print("info['action'].shape =", info["action"].shape)
+        # print("info['goal'].shape   =", info["goal"].shape)
+
+
+
         # rollout predictor autoregressively for n_steps
         HS = history_size
+        # print("HS =", HS)
+        # print("Initial emb.shape =", emb.shape)
         for t in range(n_steps):
+
             act_emb = self.action_encoder(act)
-            emb_trunc = emb[:, -HS:]  # (BS, HS, D)
-            act_trunc = act_emb[:, -HS:]  # (BS, HS, A_emb)
-            pred_emb = self.predict(emb_trunc, act_trunc)[:, -1:]  # (BS, 1, D)
-            emb = torch.cat([emb, pred_emb], dim=1)  # (BS, T+1, D)
+            emb_trunc = emb[:, -HS:]                # (BS, HS, D)
+            act_trunc = act_emb[:, -HS:]            # (BS, HS, A_emb)
+            pred_emb = self.predict(emb_trunc, act_trunc)[:, -1:]       # (BS, 1, D)
+            emb = torch.cat([emb, pred_emb], dim=1)                     # (BS, T+1, D)
 
             next_act = act_future[:, t : t + 1, :]  # (BS, 1, action_dim)
             act = torch.cat([act, next_act], dim=1)  # (BS, T+1, action_dim)
+
 
         # predict the last state
         act_emb = self.action_encoder(act)  # (BS, T, A_emb)
