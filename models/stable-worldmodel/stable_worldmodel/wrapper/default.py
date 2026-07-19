@@ -485,6 +485,104 @@ class AddPixelsWrapper(gym.Wrapper):
         pixels, info['render_time'] = self._get_pixels()
         info.update(pixels)
         return obs, reward, terminated, truncated, info
+    
+
+class AddDepthsWrapper(gym.Wrapper):
+    """Adds rendered environment depths map to info dict."""
+
+    def __init__(
+        self,
+        env: gym.Env,
+        depths_shape: tuple[int, int] = (84, 84),  # (height, width)
+        torchvision_transform: Callable[[Any], Any] | None = None,
+        resample: int | None = None,
+        camera_name: list[str] | None = None,
+    ):
+        """Initialize the wrapper.
+
+        Args:
+            env: The environment to wrap.
+            pixels_shape: Target (height, width) for rendered pixels.
+            torchvision_transform: Optional transform to apply to the pixels.
+            resample: PIL resample filter (e.g. ``Image.BILINEAR``,
+                ``Image.NEAREST``). Defaults to BILINEAR.
+            camera_name: a List of camera name defined in the environment.
+        """
+        super().__init__(env)
+        self.depths_shape = depths_shape
+        self.torchvision_transform = torchvision_transform
+        self.cam_name = camera_name
+        # For resizing, use PIL (required for torchvision transforms)
+        from PIL import Image
+
+        self.Image = Image
+        self.resample = resample if resample is not None else Image.BILINEAR
+
+    def _get_depths(self) -> tuple[dict[str, np.ndarray], float]:
+        """Render environment and process pixels.
+
+        Returns:
+            A tuple of (pixels dictionary, render time).
+        """
+        # Render the environment as an depth array
+        render = getattr(self.env.unwrapped, 'render_multiview', None)
+        render_fn = render if callable(render) else self.env.render
+
+        t0 = time.time()
+        img = render_fn()
+        t1 = time.time()
+
+        def _process_img(img_array: np.ndarray) -> np.ndarray:
+            # Convert to PIL Image for resizing
+            pil_img = self.Image.fromarray(img_array)
+            height, width = self.pixels_shape
+            pil_img = pil_img.resize((width, height), self.resample)
+            # Optionally apply torchvision transform
+            if self.torchvision_transform is not None:
+                pixels = self.torchvision_transform(pil_img)
+            else:
+                pixels = np.array(pil_img)
+            return pixels
+
+        if isinstance(img, dict):
+            pixels = {f'pixels.{k}': _process_img(v) for k, v in img.items()}
+        elif isinstance(img, (list | tuple)):
+            pixels = {
+                f'pixels.{i}': _process_img(v) for i, v in enumerate(img)
+            }
+        else:
+            pixels = {'pixels': _process_img(img)}
+
+        return pixels, t1 - t0
+
+    def reset(self, *args: Any, **kwargs: Any) -> tuple[Any, dict]:
+        """Reset environment and add pixels to info.
+
+        Args:
+            *args: Positional arguments for reset.
+            **kwargs: Keyword arguments for reset.
+
+        Returns:
+            Standard Gymnasium reset results.
+        """
+        obs, info = self.env.reset(*args, **kwargs)
+        pixels, info['render_time'] = self._get_pixels()
+        info.update(pixels)
+        return obs, info
+
+    def step(self, action: Any) -> tuple[Any, float, bool, bool, dict]:
+        """Perform step and add pixels to info.
+
+        Args:
+            action: Action to perform.
+
+        Returns:
+            Standard Gymnasium step results.
+        """
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        pixels, info['render_time'] = self._get_pixels()
+        info.update(pixels)
+        return obs, reward, terminated, truncated, info
 
 
 class ResizeGoalWrapper(gym.Wrapper):

@@ -61,12 +61,37 @@ class HDF5Dataset(Dataset):
         with self._open_h5() as f:
             lengths, offsets = f['ep_len'][:], f['ep_offset'][:]
             self._keys = keys_to_load or [
-                k for k in f.keys() if k not in ('ep_len', 'ep_offset')
+                k for k in f.keys() if k not in ('ep_len', 'ep_offset', 'original_episode_ids')
             ]
 
             for key in keys_to_cache or []:
                 self._cache[key] = f[key][:]
                 logging.info(f"Cached '{key}' from '{self.h5_path}'")
+
+            # Original episode ID -> internal episode index
+            # Keep the original episode IDs for train/val splitting
+            if "original_episode_ids" in f:
+                original_episode_ids = f["original_episode_ids"][:]
+
+                # Used by train.py
+                self.episode_ids = original_episode_ids
+
+                # Used by eval.py
+                self.orig_to_internal = {
+                    int(orig): i
+                    for i, orig in enumerate(original_episode_ids)
+                }
+
+            else:
+                # Datasets without original IDs
+                self.episode_ids = np.arange(len(lengths))
+                self.orig_to_internal = None
+
+            # if "original_episode_ids" in f:
+            #     self.episode_ids = f["original_episode_ids"][:]
+            # else:
+            
+            # self.episode_ids = np.arange(len(lengths))
 
         super().__init__(lengths, offsets, frameskip, num_steps, transform)
 
@@ -109,15 +134,32 @@ class HDF5Dataset(Dataset):
         return state
 
     def _load_slice(self, ep_idx: int, start: int, end: int) -> dict:
+
         self._open()
+        import time 
+        t0 = time.perf_counter()
+
         g_start, g_end = (
             self.offsets[ep_idx] + start,
             self.offsets[ep_idx] + end,
         )
         steps = {}
+        t1 = time.perf_counter()
+
         for col in self._keys:
-            src = self._cache if col in self._cache else self.h5_file
+            
+            t2 = time.perf_counter()
+            if col in self._cache:
+                src = self._cache 
+            else: 
+                src = self.h5_file
+            t3 = time.perf_counter()
+
+
+            # src = self._cache if col in self._cache else self.h5_file
             data = src[col][g_start:g_end]
+            t4 = time.perf_counter()
+
             if col != 'action':
                 data = data[:: self.frameskip]
 
@@ -126,8 +168,26 @@ class HDF5Dataset(Dataset):
                 steps[col] = val.decode() if isinstance(val, bytes) else val
             else:
                 steps[col] = torch.from_numpy(data)
-                if data.ndim == 4 and data.shape[-1] in (1, 3):
+                
+                t5 = time.perf_counter()
+
+                if data.ndim == 4 and data.shape[-1] in (1, 3, 4):      # RGB+D pixels: [T,H,W,C], C=4
                     steps[col] = steps[col].permute(0, 3, 1, 2)
+                t6 = time.perf_counter()
+
+                # print(
+                #     f"{col:12s} "
+                #     f"read={1000*(t3-t2):6.2f}ms "
+                #     f"data={1000*(t4-t3):6.2f}ms "
+                #     f"torch={1000*(t5-t4):6.2f}ms"
+                #     f"permute={1000*(t6-t5):6.2f}ms"
+                # )
+
+
+        t10 = time.perf_counter()
+
+        # print(f"read_offsets={1000*(t1-t0):6.2f}ms ")
+        # print(f"full loop={1000*(t10-t1):6.2f}ms ")
 
         return self.transform(steps) if self.transform else steps
 
@@ -142,7 +202,31 @@ class HDF5Dataset(Dataset):
 
     def get_row_data(self, row_idx: int | list[int]) -> dict:
         self._open()
-        return {col: self.h5_file[col][row_idx] for col in self._keys}
+        # out = {}
+        # for col in self._keys:
+        #     if self.h5_file[col].shape[0] == self.num_rows:
+        #         out[col] = self.h5_file[col][row_idx]
+        #     else:
+        #         out[col] = self.h5_file[col][:]
+        # return out
+
+        out = {col: self.h5_file[col][row_idx] for col in self._keys}
+
+        if self.orig_to_internal is not None and "ep_idx" in out:
+            mapper = np.vectorize(self.orig_to_internal.__getitem__)
+            out["ep_idx"] = mapper(out["ep_idx"])
+
+        print("\n\nget row data debug: ")
+        print("before:", self.h5_file["ep_idx"][row_idx][:10])
+        print("after :", out["ep_idx"][:10])
+
+        return out
+        
+        # ORIGINAL:
+        # print(self._keys)
+        # for k in self._keys:
+        #     print(k, self.h5_file[k].shape)
+        # return {col: self.h5_file[col][row_idx] for col in self._keys}
 
     def merge_col(
         self,

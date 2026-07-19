@@ -7,18 +7,18 @@ hydra:
     chdir: true
 
 # --- Run ---
-output_model_name: pusht_${backbone.type}_p${predictor.size}
+output_model_name: ogcube_of_1_${backbone.type}_p${predictor.size}
 subdir: null
 seed: 42
 
 # --- Data ---
-dataset_name: pusht_expert_train_video
+dataset_name: /home/student/users/Public_workspace/data_link/ogbench/cube_overfit_1_sources_1000_traj_1_actionBlocks_RGB.h5
 cache_dir: null
 n_steps: ${eval:'${wm.num_preds} + ${wm.history_size}'}
-frameskip: 5
+frameskip: 1
 
-batch_size: 32
-num_workers: 16
+batch_size: 1
+num_workers: 6
 train_split: 0.9
 
 # --- Backbone ---
@@ -33,10 +33,10 @@ patch_size: 14  # must match the encoder's patch size (14 for dinov2/dino/mae)
 
 # --- World model ---
 wm:
-  history_size: 3
+  history_size: 1
   num_preds: 1
   encoding:
-    proprio: 10
+    # proprio: 10
     action: 10
 
 predictor:
@@ -57,7 +57,7 @@ model:
     _target_: stable_worldmodel.wm.prejepa.module.create_backbone
     name: ${backbone.name}
   predictor:
-    _target_: stable_worldmodel.wm.prejepa.CausalPredictor
+    _target_: stable_worldmodel.wm.prejepa.module.CausalPredictor
     num_patches: ???
     num_frames: ${wm.history_size}
     dim: ???
@@ -76,11 +76,11 @@ optimizer:
 
 # --- Trainer ---
 trainer:
-  max_epochs: 10
+  max_epochs: 100
   strategy: ddp
   devices: auto
   accelerator: gpu
-  precision: 16-mixed
+  precision: bf16 # 16-mixed
   gradient_clip_val: 1.0
 
 dump_object: true

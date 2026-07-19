@@ -96,6 +96,9 @@ class Embedder(torch.nn.Module):
 
     def forward(self, x):
         with torch.amp.autocast(enabled=False, device_type=x.device.type):
+            if x.dim() == 2:
+                x = x.unsqueeze(0)
+            print(f'Embedder input shape: {x.shape}')
             x = x.permute(0, 2, 1)  # (B, T, B) -> (B, D, T)
             x = self.patch_embed(x)
             x = x.permute(0, 2, 1)  # (B, D, T) -> (B, T, D)

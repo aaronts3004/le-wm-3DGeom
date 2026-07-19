@@ -1,9 +1,17 @@
 import h5py
 import numpy as np
 import matplotlib.pyplot as plt
+import open3d as o3d
 
-SRC = "/home/student/data/ogbench/cube_single_expert.h5"
-MV = "/home/student/data/ogbench/multiview_data_1000_episodes.h5"
+SRC = "/home/student/data/ogbench/triple_views_with_cam_train_1_val_0_episodes.h5"
+# MV = "/home/student/users/Public_workspace/data_link/ogbench/DA3_triple_depth_1_val_0_episodes.h5"
+# MV = "/home/student/users/Public_workspace/data_link/ogbench/DA3_single_depth_10_val_1_episodes.h5"
+MV = "/home/student/users/Public_workspace/data_link/ogbench/cube_overfit_1_sources_1000_traj_1_actionBlocks_RGB.h5"
+# MV = "/home/student/users/Public_workspace/data_link/ogbench/triple_views_with_cam_train_1000_val_100_episodes.h5"
+# MV = "/home/student/users/Public_workspace/data_link/ogbench/triple_views_with_cam_train_1_val_0_episodes.h5"
+# MV = "/home/student/users/Public_workspace/data_link/ogbench/triple_views_with_cam_train_10_val_1_episodes.h5"
+# MV = "/home/student/users/Public_workspace/data_link/ogbench/front_pixels_depth_train_1000_val_100_episodes.h5"
+# MV = "/home/student/users/Public_workspace/data_link/ogbench/gt_point_map_1_val_0_episodes.h5"
 
 
 # --------------------------------------------------
@@ -19,6 +27,9 @@ def inspect_structure():
         for k in f.keys():
             print(f"{k}: {f[k].shape}")
 
+        print("\nep_idx:")
+        print(f["ep_idx"][:100])
+
         print("\noriginal_episode_ids:")
         print(f["original_episode_ids"][:100])
 
@@ -28,9 +39,9 @@ def inspect_structure():
         print("\nep_len:")
         print(f["ep_len"][:100])
 
-        print("\npixels_multiview:")
-        print(f["pixels_multiview"].shape)
-
+        # print("\npixels_multiview:")
+        # print(f["pixels_multiview"].shape)
+        
 
 # --------------------------------------------------
 # 2. Episode metadata validation
@@ -165,13 +176,70 @@ def save_visualization():
 
         plt.tight_layout()
         plt.savefig(
-            f"multiview_sanity_episode_id_{frame_num}.png",
+            f"multiview_sanity_episode_id_{frame_num}_VAL.png",
             dpi=150
         )
 
         print(
             "\nSaved multiview_sanity.png"
         )
+
+# --------------------------------------------------
+# 6. Save DA3 depth sanity image
+# --------------------------------------------------
+def save_depth_with_colorbar():
+    frame_num = 105
+    with h5py.File(MV, "r") as f:
+        depth_map = f["pixels"][frame_num]
+
+        fig, ax = plt.subplots(figsize=(6, 5))  
+
+        im = ax.imshow(
+            depth_map,
+            cmap="inferno",
+            aspect="equal",
+            vmin=depth_map.min(),
+            vmax=depth_map.max(),
+        )
+
+        ax.axis("off")
+
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.ax.set_ylabel("Depth (meters)", rotation=-90, va="bottom")
+
+        output_name = f"depth_single_with_scale_frame_{frame_num}.png"
+        plt.savefig(output_name, dpi=150, bbox_inches="tight")
+
+        plt.close(fig)
+        print(f"Saved with colorbar: {output_name}")
+
+
+# --------------------------------------------------
+# 7. Save point cloud
+# --------------------------------------------------
+def save_point_cloud():
+    frame_num = 105
+    with h5py.File(MV, "r") as f:
+        point_map_hw = f["pts3d"][frame_num]
+        image_hw = f["pixels"][frame_num]
+        valid_mask = f["atten_mask"][frame_num]
+
+
+        M_points = point_map_hw[valid_mask]
+        if image_hw.dtype == np.uint8:
+            M_colors = image_hw[valid_mask].astype(np.float32) / 255.0
+        else:
+            M_colors = image_hw[valid_mask]
+
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(M_points)
+
+        if len(M_colors) > 0:
+            pcd.colors = o3d.utility.Vector3dVector(M_colors)
+
+        output_path = "masked_point_cloud.ply"
+        o3d.io.write_point_cloud(output_path, pcd)
+        print(f"Saved point cloud: {output_path}")
 
 
 # --------------------------------------------------
@@ -182,4 +250,6 @@ inspect_structure()
 # validate_episode_metadata()
 # validate_camera_diversity()
 # validate_original_mapping()
-save_visualization()
+# save_visualization()
+# save_depth_with_colorbar()
+# save_point_cloud()

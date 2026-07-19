@@ -7,6 +7,11 @@ from pathlib import Path
 import os
 os.environ["MUJOCO_GL"] = "egl"
 
+'''
+(FINAL) SCRIPT USED TO GENERATE THE DATASET CURRENTLY IN /data/ogbench/multiview_data_{N_EPISODES_VAL}_val_episodes.h5
+'''
+
+
 from gymnasium.envs.registration import registry
 
 for env_id in sorted(registry.keys()):
@@ -24,11 +29,16 @@ episode_ids = torch.load(EPISODE_IDS_PATH)
 CAMERA_NAMES = ["front_zoomed", "front_pixels", "left", "right", "side"]
 NUM_VIEWS = len(CAMERA_NAMES)
 
-N_EPISODES = 1000
-episode_ids = episode_ids[:N_EPISODES]
+N_EPISODES_TRAIN = 1000
+N_EPISODES_VAL = 100
+train_episode_ids = episode_ids[:N_EPISODES_TRAIN]
+val_episode_ids = episode_ids[
+    N_EPISODES_TRAIN : N_EPISODES_TRAIN + N_EPISODES_VAL
+]
 
+episode_ids = val_episode_ids
 
-TARGET_FILE = Path(f"~/data/ogbench/multiview_data_{N_EPISODES}_episodes.h5").expanduser()
+TARGET_FILE = Path(f"~/data/ogbench/multiview_data_{N_EPISODES_VAL}_val_episodes.h5").expanduser()
 print("Writing new h5 to ", TARGET_FILE)
 # --------------------------------------------------
 # Initialize OGBench environment
@@ -44,7 +54,7 @@ env = gymnasium.make(
 )
 env.reset()
 
-camera_extrinsics = np.zeros((NUM_VIEWS, 4, 4), dtype=np.float32)
+camera_extrinsics = np.zeros((NUM_VIEWS, 4, 4), dtype=np.float32)           # FIXME Correct parameters
 camera_intrinsics = np.zeros((NUM_VIEWS, 3, 3), dtype=np.float32)
 
 print(env.unwrapped.model.ncam)
@@ -99,7 +109,8 @@ with h5py.File(SOURCE_FILE, "r") as f_src, \
         "pixels_multiview",
         shape=(total_frames, NUM_VIEWS, H, W, C),
         dtype=np.uint8,
-        chunks=(64, 1, H, W, C),
+        # FIXME change to chunks=(1, NUM_VIEWS, H, W, C) can accelerate writing and reading for sinalgle frame inference
+        chunks=(64, 1, H, W, C), 
         compression="lzf"
     )
 
@@ -115,6 +126,7 @@ with h5py.File(SOURCE_FILE, "r") as f_src, \
         )
     )
 
+    # FIXME might have problem with this way of saving camera extrinsics and intrinsics.
     f_tgt.create_dataset(
         "camera_extrinsics",
         data=camera_extrinsics
@@ -167,6 +179,7 @@ with h5py.File(SOURCE_FILE, "r") as f_src, \
         start = ep_offset[ep]
         length = ep_len[ep]
 
+        # FIXME shouldn't be new_ep_offset.append(start)?
         new_ep_offset.append(write_idx)
         new_ep_len.append(length)
         
@@ -185,7 +198,9 @@ with h5py.File(SOURCE_FILE, "r") as f_src, \
             # ------------------------------------------
 
             env.unwrapped.set_state(qpos, qvel)
+            # FIXME mujoco.mj_forward(model, data)
 
+            
             # ------------------------------------------
             # Render all views
             # ------------------------------------------

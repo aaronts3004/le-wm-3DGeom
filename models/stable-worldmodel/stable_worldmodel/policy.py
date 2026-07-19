@@ -453,14 +453,21 @@ def _load_model_with_attribute(run_name, attribute_name, cache_dir=None):
     Raises:
         RuntimeError: If no module with the specified attribute is found
     """
+
+    print(f"run_name = {repr(run_name)}")
+    print(f"Path(run_name) = {Path(run_name)}")
+    print(f"exists = {Path(run_name).exists()}")
+
     if Path(run_name).exists():
         run_path = Path(run_name)
+        print("Path(run_name) exists: run_path=", run_path)
     else:
         run_path = Path(
             cache_dir
             or swm.data.utils.get_cache_dir(sub_folder='checkpoints'),
             run_name,
         )
+        print("Path(run_name) does not exist --new run_path=", run_path)
 
     if run_path.is_dir():
         ckpt_files = list(run_path.glob('*_object.ckpt'))

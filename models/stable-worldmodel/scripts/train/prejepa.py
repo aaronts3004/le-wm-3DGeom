@@ -14,7 +14,7 @@ from lightning.pytorch.loggers import WandbLogger
 from loguru import logger as logging
 from omegaconf import OmegaConf, open_dict
 from torch.nn import functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from transformers import AutoVideoProcessor
 
 
@@ -148,6 +148,7 @@ def dinowm_forward(self, batch, stage, cfg):
     self.log_dict(
         {f'{stage}/{k}': v.detach() for k, v in batch.items() if '_loss' in k},
         on_step=True,
+        on_epoch=True,
         sync_dist=True,
     )
     return batch
@@ -206,9 +207,9 @@ def run(cfg):
                 raise ValueError(
                     f"Encoding key '{key}' not found in dataset columns."
                 )
-            dim = dataset.get_dim(key)
+            dim = dataset.get_dim(key) # "cfg.wm.action_dim"
             cfg.extra_dims[key] = (
-                dim if key != 'action' else dim * cfg.frameskip
+                dim if key != 'action' else dim * cfg.frameskip # "cfg.data.dataset.frameskip"
             )
 
     rnd_gen = torch.Generator().manual_seed(cfg.seed)
@@ -216,8 +217,13 @@ def run(cfg):
         dataset, [cfg.train_split, 1 - cfg.train_split], generator=rnd_gen
     )
 
+    train_sub_set = Subset(train_set, indices = list(range(1))) # overfit on 1 samples
+    val_sub_set = train_sub_set
+
+    print(f'Train set size: {len(train_sub_set)}')
+
     train_loader = DataLoader(
-        train_set,
+        train_sub_set,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         drop_last=True,
@@ -227,7 +233,7 @@ def run(cfg):
         generator=rnd_gen,
     )
     val_loader = DataLoader(
-        val_set,
+        val_sub_set,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         pin_memory=True,
@@ -258,7 +264,7 @@ def run(cfg):
             'modules': {
                 key: {
                     '_target_': 'stable_worldmodel.wm.prejepa.module.Embedder',
-                    'in_chans': cfg.extra_dims[key],
+                    'in_chans': cfg.extra_dims[key],    # "cfg.wm.action_dim"*"cfg.data.dataset.frameskip"
                     'emb_dim': int(cfg.wm.encoding[key]),
                 }
                 for key in cfg.wm.get('encoding', {})
@@ -294,7 +300,7 @@ def run(cfg):
     trainer = pl.Trainer(
         **cfg.trainer,
         callbacks=[
-            spt.callbacks.CPUOffloadCallback(),
+            # spt.callbacks.CPUOffloadCallback(),
             SaveCkptCallback(
                 run_name=cfg.output_model_name,
                 cfg=cfg.model,

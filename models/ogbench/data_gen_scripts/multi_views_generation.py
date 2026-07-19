@@ -1,14 +1,93 @@
 import numpy as np
 from PIL import Image
 import os
+
 os.environ['MUJOCO_GL'] = 'egl'
+
+
+'''
+Corrected script for generating multiple-views in 3D (aligned) from ogbench
+'''
+
+
+def _depths_to_world_points_with_colors(
+    depth: np.ndarray,
+    K: np.ndarray,
+    ext_w2c: np.ndarray,
+    images_u8: np.ndarray,
+    conf: np.ndarray | None,
+    conf_thr: float,
+    pose: str = "GLB",
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    For each frame, transform (u,v,1) through K^{-1} to get rays,
+    multiply by depth to camera frame, then use (w2c)^{-1} to transform to world frame.
+    Simultaneously extract colors.
+    """
+    N, H, W = depth.shape
+    us, vs = np.meshgrid(np.arange(W), np.arange(H))
+    ones = np.ones_like(us)
+    pix = np.stack([us, vs, ones], axis=-1).reshape(-1, 3)  # (H*W,3)
+
+    pts_all, col_all = [], []
+
+    for i in range(N):
+        d = depth[i]  # (H,W)
+        valid = np.isfinite(d) & (d > 0)
+        if conf is not None:
+            valid &= conf[i] >= conf_thr
+        if not np.any(valid):
+            continue
+
+        d_flat = d.reshape(-1)
+        vidx = np.flatnonzero(valid.reshape(-1))
+
+        K_inv = np.linalg.inv(K[i])  # (3,3)
+        c2w = np.linalg.inv(_as_homogeneous44(ext_w2c[i]))  # (4,4)
+
+        rays = K_inv @ pix[vidx].T  # (3,M)
+        Xc = rays * d_flat[vidx][None, :]  # (3,M)
+        Xc_h = np.vstack([Xc, np.ones((1, Xc.shape[1]))])
+        
+        ### SWITCH: 
+        if pose == "GLB":
+            Xw = (c2w @ Xc_h)[:3].T.astype(np.float32)  ### GLOBAL SPACE            !!! temporarily disable global shift
+        elif pose == "CAM":
+            Xw = Xc.T.astype(np.float32)                ### CAM SPACE
+        else:
+            raise ValueError(f"Unknown pose type: {pose}")
+
+        cols = images_u8[i].reshape(-1, 3)[vidx].astype(np.uint8)  # (M,3)
+
+        pts_all.append(Xw)
+        col_all.append(cols)
+
+    if len(pts_all) == 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
+
+    return np.concatenate(pts_all, 0), np.concatenate(col_all, 0)
+
+
+
+def _as_homogeneous44(ext: np.ndarray) -> np.ndarray:
+    """
+    Accept (4,4) or (3,4) extrinsic parameters, return (4,4) homogeneous matrix.
+    """
+    if ext.shape == (4, 4):
+        return ext
+    if ext.shape == (3, 4):
+        H = np.eye(4, dtype=ext.dtype)
+        H[:3, :4] = ext
+        return H
+    raise ValueError(f"extrinsic must be (4,4) or (3,4), got {ext.shape}")
+
 
 import gymnasium
 import ogbench
 import mujoco
 import h5py
 import numpy as np
-
+import open3d as o3d
 
 source_filename = '/home/student/users/Public_workspace/data_link/ogbench/cube_single_expert.h5'
 # target_filename = 'new_data.h5'
@@ -64,8 +143,13 @@ def get_camera_intrinsic(model, camera_name, width, height):
     cx = width / 2.0
     cy = height / 2.0
 
+    # K = np.array([
+    #     [-fx, 0,  cx],
+    #     [0,  fy, cy],
+    #     [0,  0,  1 ],
+    # ], dtype=np.float32)
     K = np.array([
-        [-fx, 0,  cx],
+        [fx, 0,  cx],
         [0,  fy, cy],
         [0,  0,  1 ],
     ], dtype=np.float32)
@@ -89,7 +173,10 @@ def get_camera_extrinsic(model, data, camera_name):
     R_c2w = data.cam_xmat[cam_id].reshape(3, 3).copy()
 
     # world -> camera
-    R_w2c = R_c2w.T
+    # R_w2c = R_c2w.T
+    R_cv_mj = np.diag([1, -1, -1])                                  ### what is this
+
+    R_w2c = R_cv_mj @ R_c2w.T
     t_w2c = -R_w2c @ pos
 
     T = np.eye(4, dtype=np.float32)
@@ -160,12 +247,15 @@ env.unwrapped.set_state(qpos, qvel)
 mujoco.mj_forward(model, data)
 
 # ============================================================
-# get cube position and tcp position
+# get cube position and gripper position
 # ============================================================
 cube_pos = get_body_position(model, data, "object_0")
-tcp_pos = get_site_position(model, data, "ur5e/robotiq/pinch")
+# tcp_pos = get_site_position(model, data, "ur5e/robotiq/pinch")
+right_driver_pos = get_body_position(model, data, "ur5e/robotiq/right_driver")
+left_driver_pos = get_body_position(model, data, "ur5e/robotiq/left_driver")
+gripper_pos = (right_driver_pos + left_driver_pos) / 2.0
 print("cube_pos:", cube_pos)
-print("tcp_pos:", tcp_pos)
+print("gripper_pos:", gripper_pos)
 # ============================================================
 # render rgb/depth/segmentation and get camera intrinsics / extrinsics
 # ============================================================
@@ -236,6 +326,16 @@ print("seg_views:", seg_views.shape)
 print("camera_intrinsics:", camera_intrinsics.shape)
 print("camera_extrinsics:", camera_extrinsics.shape)
 
+# ============================================================
+# save the data in npz file for testing
+# ============================================================
+save_dict = {
+        "image": rgb_views,
+        "depth": depth_views,
+        "extrinsics": camera_extrinsics,
+        "intrinsics": camera_intrinsics,
+    }
+np.savez("multiview_data.npz", **save_dict)
 # ============================================================
 # save the images for visualization
 # ============================================================
@@ -328,6 +428,87 @@ for i, seg in enumerate(seg_views):
         rgb[seg_type == k] = colors[k]
     # Image.fromarray(rgb).save("seg.png")
     Image.fromarray(rgb).save(f"{save_dir_seg}/objtype_view__{i}.png")
+
+
+
+
+#### ADDING THIS 
+save_dir_ply = "/home/student/users/Public_workspace/ply_views"
+os.makedirs(save_dir_ply, exist_ok=True)
+
+
+num_views = rgb_views.shape[0]
+print("Found num_views=", num_views)
+
+
+depth_views[depth_views > 6.0] = 0 
+
+all_points, all_colors = _depths_to_world_points_with_colors(
+    depth_views, camera_intrinsics, camera_extrinsics, rgb_views, conf=None, conf_thr=0.0
+)
+
+# for view in range(num_views): 
+#     rgb = rgb_views[view]
+#     depth = depth_views[view]
+#     intrinsics = camera_intrinsics[view]
+#     extrinsics = camera_extrinsics[view]
+
+#     K_inv = np.linalg.inv(intrinsics)
+
+    # colors = []
+    # points = []
+    # for i in range(H): 
+    #     for j in range(W): 
+
+    #         d = depth[i,j]
+    #         if d >= 6.999:
+    #             continue
+    #         pixel = np.array([j, i, 1.0])
+    #         ray = K_inv @ pixel
+    #         point_cam = d * ray
+
+    #         # fx = intrinsics[0][0]
+    #         # fy = intrinsics[1][1]
+    #         # cx = intrinsics[0][2]
+    #         # cy = intrinsics[1][2]
+
+    #         # d = depth[i][j]
+
+    #         # x = (j - cx) * d / fx 
+    #         # y = (i - cy) * d/ fy 
+    #         # z = d 
+
+    #         # point_cam = np.array([x,y,z])
+
+    #         point_world = (
+    #             extrinsics[:3, :3] @ point_cam
+    #             + extrinsics[:3, 3]
+    #         )
+
+    #         points.append(point_world)
+    #         colors.append(rgb[i, j] / 255.0)
+    
+    # all_points.extend(points)
+    # all_colors.extend(colors)
+
+pcd = o3d.geometry.PointCloud()
+pcd.points = o3d.utility.Vector3dVector(
+    np.asarray(all_points)
+)
+pcd.colors = o3d.utility.Vector3dVector(
+    np.asarray(all_colors.astype(np.float32) / 255.0)
+)
+o3d.io.write_point_cloud(
+    f"{save_dir_ply}/mujoco_pcd.ply",
+    pcd
+)
+
+o3d.io.write_point_cloud(
+    f"{save_dir_ply}/mujoco_pcd.pcd",
+    pcd
+)
+
+print(f"Also saved PLYs to {save_dir_ply}\n\n")
 
 
 

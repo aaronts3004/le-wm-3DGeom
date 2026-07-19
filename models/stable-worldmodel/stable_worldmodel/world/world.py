@@ -241,6 +241,9 @@ class World:
         """
         if dataset is not None:
             mode = reset_mode or 'wait'
+
+            print("calling World.evaluate() with mode=",mode )
+
             return self._evaluate_from_dataset(
                 dataset,
                 episodes_idx,
@@ -511,6 +514,12 @@ class World:
         )
 
         self.reset(seed=init_state.get('seed'))
+        print("After reset:")
+        for k, v in self.infos.items():
+            if isinstance(v, np.ndarray):
+                print(k, v.shape)
+
+
 
         if callables:
             merged = {**init_state, **goal_state}

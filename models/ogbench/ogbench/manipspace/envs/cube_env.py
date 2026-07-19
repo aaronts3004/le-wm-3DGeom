@@ -703,7 +703,13 @@ class CubeEnv(ManipSpaceEnv):
 
         self._success = False
 
-    def set_new_target(self, return_info=True, p_stack=0.5):
+    def set_new_target(self,
+        return_info=True,
+        p_stack=0.5,
+        target_pos=None,
+        target_yaw=None,
+        target_block=None,
+        ):
         """Set a new random target for data collection.
 
         Args:
@@ -726,22 +732,33 @@ class CubeEnv(ManipSpaceEnv):
                 top_blocks.append(i)
 
         # Pick one of the top cubes as the target.
-        self._target_block = self.np_random.choice(top_blocks)
-
-        stack = len(top_blocks) >= 2 and self.np_random.uniform() < p_stack
-        if stack:
-            # Stack the target block on top of another block.
-            block_idx = self.np_random.choice(list(set(top_blocks) - {self._target_block}))
-            block_pos = self._data.joint(f'object_joint_{block_idx}').qpos[:3]
-            tar_pos = np.array([block_pos[0], block_pos[1], block_pos[2] + 0.04])
+        # Target block
+        if target_block is None:
+            self._target_block = self.np_random.choice(top_blocks)
         else:
-            # Randomize target position.
-            xy = self.np_random.uniform(*self._target_sampling_bounds)
-            tar_pos = (*xy, 0.02)
-        # Randomize target orientation.
-        yaw = self.np_random.uniform(0, 2 * np.pi)
-        tar_ori = lie.SO3.from_z_radians(yaw).wxyz.tolist()
+            self._target_block = target_block
 
+        # Target position
+        if target_pos is None:
+            stack = len(top_blocks) >= 2 and self.np_random.uniform() < p_stack
+
+            if stack:
+                block_idx = self.np_random.choice(list(set(top_blocks) - {self._target_block}))
+                block_pos = self._data.joint(f'object_joint_{block_idx}').qpos[:3]
+                tar_pos = np.array([block_pos[0], block_pos[1], block_pos[2] + 0.04])
+            else:
+                xy = self.np_random.uniform(*self._target_sampling_bounds)
+                tar_pos = np.array([xy[0], xy[1], 0.02])
+        else:
+            tar_pos = np.asarray(target_pos)
+
+        # Target orientation
+        if target_yaw is None:
+            yaw = self.np_random.uniform(0, 2 * np.pi)
+        else:
+            yaw = target_yaw
+
+        tar_ori = lie.SO3.from_z_radians(yaw).wxyz.tolist()
         # Only show the target block.
         for i in range(self._num_cubes):
             if i == self._target_block:

@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 import torch
-
+import time
 
 class Dataset:
     """Base class for episode-based datasets.
@@ -65,10 +65,16 @@ class Dataset:
         return len(self.clip_indices)
 
     def __getitem__(self, idx: int) -> dict:
+        
+        # import time 
+        t0 = time.perf_counter()
         ep_idx, start = self.clip_indices[idx]
         steps = self._load_slice(ep_idx, start, start + self.span)
         if 'action' in steps:
             steps['action'] = steps['action'].reshape(self.num_steps, -1)
+
+        # print("get_item: ", time.perf_counter() - t0)
+        
         return steps
 
     def load_chunk(
