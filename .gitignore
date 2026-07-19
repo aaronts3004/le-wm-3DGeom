@@ -36,3 +36,8 @@ models/**/*.hydra
 models/**/*.yaml
 
 .lewm_public/
+
+*.png
+*.gif
+*.pcd
+*.ply
